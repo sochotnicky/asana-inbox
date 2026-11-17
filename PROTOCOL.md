@@ -43,6 +43,10 @@ Sub `CurrentDomainUserProjectionInbox` with `db_object_id=<du>` and `inboxThread
 numAdditionalThreads:5, listThreadSize:3, multifilterParams:{objectViewId:…, multifilterList:[], inboxSortOverride:[{sortType:"priority",value:"recency"}]}}`
 The minimal form (only `db_object_id` + `inboxThreadsInfo`) gets `{"msg":"error","reason":"Unexpected internal error"}`.
 The full captured param set is in `SyncClient.sub_inbox` (`asana_web.py`); which keys are required is untested.
+Experiment-flag params are required too: the bundle declares them as
+`o={CurrentDomainUserProjectionInbox:{<name>:{type:"flag",experimentName:…},…}}`, and a release that adds
+one makes the old param set fail with "Unexpected internal error" (2026-11-17: `persistedDurationEnabled`,
+`useAvailabilityScv` added; sending them as `false` works). Grep the new `bundle.js` for that block when the sub breaks.
 `currentDomainUserId` is sent as a number, `db_object_id` as a string; `objectViewId`
 (`params.inboxThreadsInfo.multifilterParams.objectViewId`) is a per-user inbox view id, required.
 

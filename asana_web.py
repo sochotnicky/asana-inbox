@@ -542,7 +542,12 @@ class SyncClient:
             "loadTaskTimeEntriesClearDismissibleKey": False,
             "taskTimeEntriesClearDismissibleKey": {},
             "daysUntilUnblockRetrialsForOfferingParams": {"offering": "timesheets-and-budgets"},
+            # Experiment-flag params ({type:"flag"} in the bundle's projection defs). The server
+            # rejects the sub ("Unexpected internal error") when one is missing; Asana adds new
+            # ones with releases (persistedDurationEnabled, useAvailabilityScv: 2026-11-17).
             "useDataBoundary": False,
+            "persistedDurationEnabled": False,
+            "useAvailabilityScv": False,
             "inboxThreadsInfo": {
                 "showUnread": True, "inboxTab": "activity",
                 "upperTimestampBound": big, "lowerTimestampBound": big,
