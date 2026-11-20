@@ -332,22 +332,163 @@ class Session:
         raise RuntimeError("release_revision/bundle not found in app HTML (logged out?)")
 
     def bundle_version(self, bundle_url: str) -> str:
+        return self.bundle_info(bundle_url)["version"]
+
+    def bundle_info(self, bundle_url: str) -> dict:
+        """{"version": projectionBundleVersion, "inbox_params": {...}} scraped from bundle.js.
+        inbox_params are the web app's own defaults for CurrentDomainUserProjectionInbox (see
+        inbox_params_from_blocks); {} if the bundle layout changed. Cached per bundle commit."""
         commit = re.search(r"/bundles/([0-9a-f]+)/", bundle_url).group(1)
-        cached = CACHE / f"bundle-version-{commit}"
+        cached = CACHE / f"bundle-{commit}.json"
         if cached.exists():
-            return cached.read_text().strip()
-        rx = re.compile(rb'\{version:"([^"]+)",clientQueries:')
-        tail = b""
+            return json.loads(cached.read_text())
+        version_rx = re.compile(rb'\{version:"([^"]+)",clientQueries:')
+        version, blocks = None, {}  # blocks: absolute offset -> parsed object (None = unparseable)
+        tail, base = b"", 0  # base: absolute offset of buf[0]
         with httpx.stream("GET", bundle_url, headers={"User-Agent": UA}, timeout=120) as r:
             r.raise_for_status()
             for chunk in r.iter_bytes(1 << 20):
                 buf = tail + chunk
-                if m := rx.search(buf):
-                    CACHE.mkdir(parents=True, exist_ok=True)
-                    cached.write_text(m.group(1).decode())
-                    return m.group(1).decode()
-                tail = buf[-256:]
-        raise RuntimeError("projectionBundleVersion not found in bundle")
+                for m in INBOX_BLOCK_RX.finditer(buf):
+                    if base + m.start() in blocks:
+                        continue
+                    text = buf[m.end():m.end() + (1 << 16)].decode("utf-8", "replace")
+                    try:
+                        blocks[base + m.start()] = parse_js_literal(text)[0]
+                    except IncompleteLiteral:
+                        pass  # runs past the buffer; the tail keeps it for the next chunk
+                    except ValueError:
+                        blocks[base + m.start()] = None
+                if m := version_rx.search(buf):
+                    version = m.group(1).decode()
+                    break  # the param blocks come earlier in the bundle
+                keep = min(len(buf), 1 << 16)
+                base += len(buf) - keep
+                tail = buf[-keep:]
+        if not version:
+            raise RuntimeError("projectionBundleVersion not found in bundle")
+        info = {"version": version, "inbox_params": inbox_params_from_blocks(list(blocks.values()))}
+        CACHE.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(info))
+        return info
+
+
+# ---------------------------------------------------------------- bundle.js param defaults
+#
+# The web app builds a projection's sub params as {...defaults[name], ...flags[name], ...explicit},
+# where defaults and flags are two minified maps keyed by projection name:
+#   r={CurrentDomainUserProjectionInbox:{loadTaskWpl:!0,authorOptions:{includeImages:!1},…},…}
+#   o={CurrentDomainUserProjectionInbox:{useDataBoundary:{type:"flag",experimentName:"…"},…},…}
+# The server rejects a sub missing any of them, and Asana adds keys with releases, so we read them
+# from the bundle rather than only hard-coding them.
+
+INBOX_BLOCK_RX = re.compile(rb"[\w$]+=\{CurrentDomainUserProjectionInbox:")
+UNKNOWN = object()  # a JS value that isn't a plain literal, e.g. `i.C7(3)`
+_IDENT_RX = re.compile(r"[A-Za-z_$][\w$]*|\d+")
+_NUM_RX = re.compile(r"-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+_STR_RX = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+class IncompleteLiteral(Exception):
+    """The literal runs past the end of the text."""
+
+
+def _skip_expr(s: str, i: int) -> int:
+    """Index of the , } or ] that ends the JS expression starting at s[i]."""
+    depth = 0
+    while i < len(s):
+        c = s[i]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if not depth:
+                return i
+            depth -= 1
+        elif c == "," and not depth:
+            return i
+        elif c in "\"'`":
+            i += 1
+            while i < len(s) and s[i] != c:
+                i += 2 if s[i] == "\\" else 1
+        i += 1
+    raise IncompleteLiteral
+
+
+def parse_js_literal(s: str, i: int = 0) -> tuple[object, int]:
+    """Parse the minified JS value at s[i:]; returns (value, end index). Handles objects, arrays,
+    double-quoted strings, numbers, !0/!1, true/false/null. Any other expression becomes UNKNOWN.
+    Raises IncompleteLiteral at end of text, ValueError on syntax it doesn't support."""
+    if i >= len(s):
+        raise IncompleteLiteral
+    c = s[i]
+    if c in "{[":
+        close, out, i = ("}", {}, i + 1) if c == "{" else ("]", [], i + 1)
+        while True:
+            if i >= len(s):
+                raise IncompleteLiteral
+            if s[i] == close:
+                return out, i + 1
+            if close == "}":
+                m = _STR_RX.match(s, i) or _IDENT_RX.match(s, i)
+                if not m:
+                    raise ValueError(f"unsupported object key at {s[i:i + 20]!r}")
+                key, i = (json.loads(m.group()) if m.group()[0] == '"' else m.group()), m.end()
+                if i >= len(s):
+                    raise IncompleteLiteral
+                if s[i] != ":":  # shorthand {a}, methods, spreads
+                    raise ValueError(f"unsupported object entry at {s[i:i + 20]!r}")
+                out[key], i = parse_js_literal(s, i + 1)
+            else:
+                val, i = parse_js_literal(s, i)
+                out.append(val)
+            if i >= len(s):
+                raise IncompleteLiteral
+            if s[i] == ",":
+                i += 1
+            elif s[i] != close:
+                raise ValueError(f"expected , or {close} at {s[i:i + 20]!r}")
+    if c == '"':
+        m = _STR_RX.match(s, i)
+        if not m:
+            raise IncompleteLiteral
+        try:
+            return json.loads(m.group()), m.end()
+        except json.JSONDecodeError:  # JS-only escapes like \x41
+            return UNKNOWN, m.end()
+    for lit, val in (("!0", True), ("!1", False), ("true", True), ("false", False), ("null", None)):
+        if s.startswith(lit, i) and not (i + len(lit) < len(s) and (s[i + len(lit)].isalnum() or s[i + len(lit)] in "_$.(")):
+            return val, i + len(lit)
+    if m := _NUM_RX.match(s, i):
+        end = m.end()
+        if end < len(s) and s[end] in ",}]":
+            return (float(m.group()) if any(ch in m.group() for ch in ".eE") else int(m.group())), end
+    return UNKNOWN, _skip_expr(s, i)
+
+
+def _is_plain(v) -> bool:
+    if v is UNKNOWN:
+        return False
+    if isinstance(v, dict):
+        return all(_is_plain(x) for x in v.values())
+    if isinstance(v, list):
+        return all(_is_plain(x) for x in v)
+    return True
+
+
+def inbox_params_from_blocks(blocks: list) -> dict:
+    """Merge the parsed CurrentDomainUserProjectionInbox entries of the defaults and flags maps.
+    Flags ({type:"flag",…}) are sent as false; values that aren't plain literals are left out, so
+    the hard-coded params in sub_inbox stay as their fallback."""
+    out = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for key, val in block.items():
+            if isinstance(val, dict) and val.get("type") == "flag":
+                out[key] = False
+            elif _is_plain(val):
+                out[key] = val
+    return out
 
 
 def find_keys(obj, pattern: re.Pattern, path="") -> list[tuple[str, object]]:
@@ -397,8 +538,10 @@ class Store:
 
 
 class SyncClient:
-    def __init__(self, sess: Session, du: str, shard: str, dump: Path | None = None):
+    def __init__(self, sess: Session, du: str, shard: str, dump: Path | None = None,
+                 inbox_params: dict | None = None):
         self.sess, self.du, self.shard = sess, du, shard
+        self.inbox_params = inbox_params or {}  # Session.bundle_info()["inbox_params"]
         self.dump = dump.open("a") if dump else None
         self.store = Store()
         self.next_id = 0
@@ -527,10 +670,11 @@ class SyncClient:
                        "inboxSortOverride": [{"sortType": "priority", "value": "recency"}]}
         if view_id:
             multifilter = {"objectViewId": view_id, **multifilter}
-        await self.sub("CurrentDomainUserProjectionInbox", {
+        params = {
             "db_object_id": self.du,
             "loadTaskWpl": True,
             "loadNotificationsVsActivityRelevanceFields": False,
+            "authorOptions": {"includeImages": False},  # required since 2026-11-20 release
             "categoriesIsArchived": False,
             "dataPolicyParams": {"type": "not_applicable"},
             "dataPolicyForCurrentDomainUserParams": {"type": "current_actor"},
@@ -543,8 +687,8 @@ class SyncClient:
             "taskTimeEntriesClearDismissibleKey": {},
             "daysUntilUnblockRetrialsForOfferingParams": {"offering": "timesheets-and-budgets"},
             # Experiment-flag params ({type:"flag"} in the bundle's projection defs). The server
-            # rejects the sub ("Unexpected internal error") when one is missing; Asana adds new
-            # ones with releases (persistedDurationEnabled, useAvailabilityScv: 2026-11-17).
+            # rejects the sub ("Unexpected internal error") when one is missing but ignores extra
+            # ones. Normally also read from the bundle (inbox_params); these are the fallback.
             "useDataBoundary": False,
             "persistedDurationEnabled": False,
             "useAvailabilityScv": False,
@@ -570,7 +714,11 @@ class SyncClient:
             "paginatedTeamMembershipsRangeForCollaboratorRecommendation": rng(2),
             "shareable": {"shareableId": -1},
             "teamComputedMembershipForShareableParams": {"shareableId": -1},
-        }, timeout=max(90.0, 0.15 * num_threads))
+        }
+        # The bundle's defaults and flags win over the hard-coded copies above, which stay as
+        # the fallback for values the scraper can't read (e.g. ranges) or if scraping failed.
+        params.update(self.inbox_params)
+        await self.sub("CurrentDomainUserProjectionInbox", params, timeout=max(90.0, 0.15 * num_threads))
 
     def inbox_threads(self) -> list[dict]:
         # One value per inbox sub (keyed by its params); after load_all re-subs, take the longest.
@@ -746,12 +894,14 @@ class WebInbox:
         self.du, self.view, self.n = du, view, n
         self.sess = Session(browser, profile, cookie_file)
         self.rev, bundle = self.sess.release_info()
-        self.ver = self.sess.bundle_version(bundle)
+        self.bundle = self.sess.bundle_info(bundle)
+        self.ver = self.bundle["version"]
         self.notifications: dict[str, list[str]] = {}  # item id -> notification ids
 
     async def _client(self) -> SyncClient:
         ss = self.sess.start_session(self.rev, f"/1/{self.sess.domain}/inbox/{self.du}")
-        client = SyncClient(self.sess, self.du, self.sess.domain)
+        client = SyncClient(self.sess, self.du, self.sess.domain,
+                            inbox_params=self.bundle["inbox_params"])
         await client.connect(ss["session_id"], self.ver, self.rev)
         return client
 
@@ -811,7 +961,10 @@ def cmd_bootstrap(args) -> None:
     rev, bundle = sess.release_info()
     print("release_revision:", rev)
     print("bundle:", bundle)
-    print("projectionBundleVersion:", sess.bundle_version(bundle))
+    info = sess.bundle_info(bundle)
+    print("projectionBundleVersion:", info["version"])
+    print("inbox params from bundle:", json.dumps(info["inbox_params"]) if info["inbox_params"]
+          else "(none found; using hard-coded params only)")
     ss = sess.start_session(rev)
     print("start_session keys:", sorted(ss))
     print("session_id present:", bool(ss.get("session_id")))
@@ -838,11 +991,11 @@ def print_items(items: list[dict]) -> None:
 async def open_inbox(args) -> tuple[SyncClient, list[dict]]:
     sess = Session(args.browser, args.profile, args.cookies)
     rev, bundle = sess.release_info()
-    ver = sess.bundle_version(bundle)
+    info = sess.bundle_info(bundle)
     ss = sess.start_session(rev, f"/1/{sess.domain}/inbox/{args.du}")
     client = SyncClient(sess, args.du, args.shard or sess.domain,
-                        Path(args.dump) if args.dump else None)
-    await client.connect(ss["session_id"], ver, rev)
+                        Path(args.dump) if args.dump else None, info["inbox_params"])
+    await client.connect(ss["session_id"], info["version"], rev)
     print("connected", file=sys.stderr)
     await client.load_inbox(args.n, args.view, log=lambda s: print(s, file=sys.stderr))
     return client, client.inbox_threads()

@@ -43,10 +43,15 @@ Sub `CurrentDomainUserProjectionInbox` with `db_object_id=<du>` and `inboxThread
 numAdditionalThreads:5, listThreadSize:3, multifilterParams:{objectViewId:…, multifilterList:[], inboxSortOverride:[{sortType:"priority",value:"recency"}]}}`
 The minimal form (only `db_object_id` + `inboxThreadsInfo`) gets `{"msg":"error","reason":"Unexpected internal error"}`.
 The full captured param set is in `SyncClient.sub_inbox` (`asana_web.py`); which keys are required is untested.
-Experiment-flag params are required too: the bundle declares them as
-`o={CurrentDomainUserProjectionInbox:{<name>:{type:"flag",experimentName:…},…}}`, and a release that adds
-one makes the old param set fail with "Unexpected internal error" (2026-11-17: `persistedDurationEnabled`,
-`useAvailabilityScv` added; sending them as `false` works). Grep the new `bundle.js` for that block when the sub breaks.
+The web app builds the params as `{...defaults[name], ...flags[name], ...explicit}` from two maps in `bundle.js`:
+`r={CurrentDomainUserProjectionInbox:{loadTaskWpl:!0,…}}` (defaults) and
+`o={CurrentDomainUserProjectionInbox:{<name>:{type:"flag",experimentName:…},…}}` (experiment flags, sent as booleans).
+A sub missing any of these keys fails with "Unexpected internal error"; extra keys are ignored.
+Releases add keys (2026-11-17: flags `persistedDurationEnabled`, `useAvailabilityScv`; 2026-11-20: default
+`authorOptions:{includeImages:!1}`), so `Session.bundle_info` scrapes both maps (flags → `false`, non-literal
+values like `i.C7(3)` skipped) and caches them as `~/.cache/asana-inbox/bundle-<commit>.json`; `sub_inbox`
+lays them over its hard-coded params. `./asana_web.py bootstrap` prints what was scraped. If the sub breaks
+anyway, check the explicit params (built in the function that calls `.create("CurrentDomainUserProjectionInbox",…)`).
 `currentDomainUserId` is sent as a number, `db_object_id` as a string; `objectViewId`
 (`params.inboxThreadsInfo.multifilterParams.objectViewId`) is a per-user inbox view id, required.
 
