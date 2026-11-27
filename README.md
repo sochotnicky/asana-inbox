@@ -72,7 +72,7 @@ Messages (team or project posts) show their full text in the details view and ar
 | Key | Action |
 | --- | --- |
 | `↑`/`↓`, `PgUp`/`PgDn` | Move |
-| `Enter` | Details: description, comments and other notifications, link |
+| `Enter` | Details: description, comments and other notifications, link. `↑`/`↓`, `PgUp`/`PgDn` and `Home`/`End` scroll a long one |
 | `space` | Mark / unmark row |
 | `p` | Mark / unmark all shown rows in this row's project |
 | `c` | Mark / unmark all shown completed tasks |
@@ -176,7 +176,7 @@ docker run --rm -p 8765:8765 \
 
 Then open <http://localhost:8765/>. Every setting is an env var (`ASANA_INBOX_LOGO_URL`, `ASANA_WORKSPACE`, `ASANA_SCOPES`, …), and anything after the image name is passed to `asana_inbox_web.py`. In the container the server listens on all interfaces; the page still only answers to `localhost` and the OAuth redirect URI's host. If you serve it under another name, for example behind a reverse proxy, add that name with `ASANA_ALLOWED_HOSTS=inbox.example.com` (comma-separated for several). For anything beyond your own machine, put it behind HTTPS and use an `https://` redirect URI, so the session cookie is marked Secure.
 
-The keys are the same as in the TUI (see [Using it](#using-it)), with `j`/`k`, `Home`/`End` and the mouse as well. Press `?` (or the hint at the top of the page) for a list of all shortcuts. Click the ○ column to mark a row, double-click a row for details, and click any column header to sort by it (click again to reverse; Done puts completed tasks first, Assignee puts yours first, Kind orders by importance: assigned, mention, comment, …). The filter is the box in the toolbar: `l` focuses it, and it applies as you type. The page follows your system's light or dark mode; the ◐ button in the header switches between Auto, Light and Dark, and the choice is remembered in that browser.
+The keys are the same as in the TUI (see [Using it](#using-it)), with `j`/`k`, `Home`/`End` and the mouse as well; in the details view these and `space`/`Shift+space` scroll. Press `?` (or the hint at the top of the page) for a list of all shortcuts. Click the ○ column to mark a row, double-click a row for details, and click any column header to sort by it (click again to reverse; Done puts completed tasks first, Assignee puts yours first, Kind orders by importance: assigned, mention, comment, …). The filter is the box in the toolbar: `l` focuses it, and it applies as you type. The page follows your system's light or dark mode; the ◐ button in the header switches between Auto, Light and Dark, and the choice is remembered in that browser.
 
 ## Command-line client
 
