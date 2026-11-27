@@ -1,159 +1,42 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["textual>=0.80", "httpx>=0.27", "websockets>=13", "certifi", "browser-cookie3>=0.20"]
+# dependencies = ["textual>=0.80", "httpx>=0.27"]
 # ///
 """Bulk-archive Asana Inbox items from a TUI.
 
-    ./asana_inbox.py --du <domain user id> --view <inbox objectViewId>   (or env ASANA_DU / ASANA_VIEW)
-    ./asana_inbox.py --fake
+    ./asana_inbox.py                  # token in ASANA_TOKEN or ~/.config/asana-inbox/token
+    ./asana_inbox.py --fake           # generated data, no Asana
 
-Cookies come from the first browser with an Asana login (Firefox, Chrome, Chromium, Brave, Edge);
-see --browser/--profile/--cookies, and `./asana_web.py --help` for exporting a cookie file.
+Uses Asana's REST API with a personal access token (see `./asana_api.py --help`).
 """
 
 import argparse
 import json
 import os
-import random
 import re
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+import webbrowser
+from datetime import date, datetime
 from pathlib import Path
-from typing import Protocol
 
+from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, Label, Static, TextArea
+
+# The model and backends live in inbox_core (shared with the web UI); re-exported from here.
+from inbox_core import (  # noqa: F401
+    PENDING_PROJECT, PROJECT_WIDTH, SORTS, TITLE_WIDTH, ApiBackend, Backend, FakeBackend,
+    InboxItem, ellipsize, followup_name, item_fields, match_text, parse_due, primary_project, to_item,
+)
 
 
-@dataclass
-class InboxItem:
-    id: str
-    title: str
-    project: str
-    kind: str
-    updated: datetime
-    projects: list[str] = field(default_factory=list)  # all projects; `project` is the grouping one
-    completed: datetime | None = None
-    url: str = ""
-    assignee: str | None = None
-    mine: bool = False  # assigned to the current user
-    due: datetime | None = None  # local time; midnight for date-only dues
-    due_has_time: bool = False
-    description: str = ""
-    events: list[dict] = field(default_factory=list)  # {time, who, what, text}
-
-    def due_text(self) -> Text | str:
-        if self.due is None:
-            return ""
-        label = self.due.strftime("%Y-%m-%d %H:%M" if self.due_has_time else "%Y-%m-%d")
-        if self.completed:
-            return Text(label, style="dim")
-        now = datetime.now()
-        overdue = self.due < now if self.due_has_time else self.due.date() < now.date()
-        if overdue:
-            return Text(label, style="bold red")
-        if self.due.date() == now.date():
-            return Text(label, style="yellow")
-        return label
-
-
-class Backend(Protocol):
-    def list_items(self, progress=None) -> list[InboxItem]: ...
-    def archive(self, ids: list[str]) -> None: ...
-
-
-class FakeBackend:
-    """Generated inbox for trying the UI (--fake) and for docs/screenshots.py."""
-
-    def __init__(self, n: int = 60):
-        rnd = random.Random(1)
-        project_names = ["Platform", "Website", "Mobile App", "Customer Support",
-                    # longer than PROJECT_WIDTH, to exercise shortening (`w`)
-                    "Infrastructure Reliability & Observability Initiatives"]
-        verbs = ["Fix", "Investigate", "Rotate", "Upgrade", "Review"]
-        things = ["login timeout", "flaky CI job", "database migration", "TLS certificate", "search index"]
-        # Some titles longer than TITLE_WIDTH, to exercise shortening (`w`).
-        long_tails = [
-            ": follow up from the incident review, confirm alert thresholds and update the runbook",
-            " across all regions before the maintenance window, then notify the on-call rotation",
-            " (blocked on vendor support ticket; see thread for the latest workaround and ETA)",
-        ]
-        # Broad boards a task is often also in, shown in the "Also in" column.
-        boards = ["Company Goals", "Team Roadmap", "Engineering Backlog", "Q4 Planning"]
-        people = ["Alice", "Bob", "Carol", "Dan"]
-        comments = [
-            "Reproduced on staging, looks like a timeout in the auth proxy.",
-            "Can we get this done before the release freeze?",
-            "PR is up, would appreciate a review.",
-            "Moved the due date, waiting on the vendor.",
-            "Done on my side, please verify.",
-        ]
-        descriptions = [
-            "Users report intermittent failures. Collect logs from the last week, find the common "
-            "pattern and propose a fix.\n\nAcceptance: no failures in 7 days of monitoring.",
-            "Follow-up from the last incident review.\n\n- update the runbook\n- add an alert\n"
-            "- share findings in the weekly sync",
-            "",
-        ]
-        now = datetime.now()
-
-        def memberships(project: str) -> list[str]:
-            return [*rnd.sample(boards, rnd.choice([0, 0, 1, 2, 3])), project]
-
-        def events(updated: datetime) -> list[dict]:
-            count = rnd.randint(1, 4)
-            out, t = [], updated - timedelta(hours=rnd.randint(4, 30) * count)
-            for _ in range(count):
-                t += timedelta(hours=rnd.randint(2, 30), minutes=rnd.randint(0, 59))
-                what = rnd.choice(["comment", "comment", "task assigned", "task due date changed",
-                                   "added follower"])
-                out.append({"time": min(t, updated).timestamp(), "who": rnd.choice(people),
-                            "what": what, "text": rnd.choice(comments) if what == "comment" else ""})
-            return out
-
-        self.items = {}
-        for i in range(n):
-            kind = rnd.choices(["task", "added to project", "conversation", "daily summary"],
-                               weights=[14, 4, 1, 1])[0]
-            updated = now - timedelta(hours=rnd.randint(1, 24 * 60))
-            if kind == "daily summary":
-                title, project, projects = f"Daily summary for {updated.date()}", "(daily summaries)", []
-            else:
-                title = f"{rnd.choice(verbs)} {rnd.choice(things)}" + (
-                    rnd.choice(long_tails) if rnd.random() < 0.25 else "")
-                project = rnd.choice(project_names)
-                projects = memberships(project)
-            task = kind in ("task", "added to project")
-            mine = task and rnd.random() < 0.3
-            self.items[str(i)] = InboxItem(
-                id=str(i),
-                title=title,
-                project=project,
-                projects=projects,
-                kind=kind,
-                updated=updated,
-                completed=updated if task and rnd.random() < 0.2 else None,
-                url=f"https://app.asana.com/1/0/project/0/task/{1000 + i}",
-                assignee="Me" if mine else (rnd.choice([None, *people]) if task else None),
-                mine=mine,
-                description=rnd.choice(descriptions) if task else "",
-                events=events(updated) if kind != "daily summary" else [
-                    {"time": updated.timestamp(), "who": None, "what": "daily summary", "text": ""}],
-                due=(now.replace(hour=0, minute=0, second=0, microsecond=0)
-                     + timedelta(days=rnd.randint(-10, 20))) if task and rnd.random() < 0.5 else None,
-            )
-
-    def list_items(self, progress=None) -> list[InboxItem]:
-        return list(self.items.values())
-
-    def archive(self, ids: list[str]) -> None:
-        for i in ids:
-            self.items.pop(i, None)
+def due_text(it: InboxItem) -> Text | str:
+    style = {"done": "dim", "overdue": "bold red", "today": "yellow"}.get(it.due_state())
+    return Text(it.due_label(), style=style) if style else it.due_label()
 
 
 SETTINGS = (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -179,82 +62,6 @@ def save_setting(key: str, value) -> None:
         pass  # not worth failing the UI over
 
 
-PROJECT_WIDTH = 30  # max chars for the Project column
-TITLE_WIDTH = 72  # max chars for the Title column
-
-
-def ellipsize(text: str, width: int = PROJECT_WIDTH) -> str:
-    return text if len(text) <= width else text[: width - 1].rstrip() + "…"
-
-
-KINDS = {
-    "TaskNotificationThread": "task",
-    "TaskAddedToPotNotificationThread": "added to project",
-    "ConversationNotificationThread": "conversation",
-    "DailySummaryNotificationThread": "daily summary",
-    "OverdueTasksReminderThread": "overdue reminder",
-    "ActionRequestNotificationThread": "access request",
-    "PotNotificationThread": "project",
-}
-
-
-class WebBackend:
-    """Real Asana inbox via the web app's sync protocol (asana_web.py)."""
-
-    def __init__(self, du: str, view: int | None, n: int, ignore: set[str], **cookie_source):
-        from asana_web import WebInbox  # heavy deps only when used
-
-        self.web = WebInbox(du, view, n, **cookie_source)
-        self.ignore = ignore
-
-    def primary_project(self, projects: list[str], kind: str) -> str:
-        # Asana lists broad memberships (company goals, planning boards) first; the most
-        # specific project tends to be last.
-        useful = [p for p in projects if p not in self.ignore]
-        if useful or projects:
-            return (useful or projects)[-1]
-        return {"conversation": "(conversations)", "daily summary": "(daily summaries)",
-                "overdue reminder": "(overdue reminders)"}.get(
-            kind, "(no project)")
-
-    def list_items(self, progress=None) -> list[InboxItem]:
-        items = []
-        for it in self.web.list_items(progress):
-            project = self.primary_project(it["projects"], KINDS.get(it["type"], ""))
-            items.append(InboxItem(
-                id=it["id"],
-                title=it["title"],
-                project=project,
-                kind=KINDS.get(it["type"], it["type"] or "?"),
-                updated=datetime.fromtimestamp(it["updated"]),
-                projects=it["projects"],
-                completed=datetime.fromtimestamp(it["completed"]) if it.get("completed") else None,
-                url=it.get("urls", {}).get(project) or it.get("url", ""),
-                assignee=it.get("assignee"),
-                mine=it.get("mine", False),
-                due=(datetime.fromtimestamp(it["due_time"]) if it.get("due_time")
-                     else datetime.combine(date.fromisoformat(it["due_date"]), datetime.min.time())
-                     if it.get("due_date") else None),
-                due_has_time=bool(it.get("due_time")),
-                description=it.get("description", ""),
-                events=it.get("events", []),
-            ))
-        return items
-
-    def archive(self, ids: list[str]) -> None:
-        self.web.archive(ids)
-
-
-SORTS = {
-    "project": lambda it: (it.project.lower(), it.title.lower()),
-    "title": lambda it: (it.title.lower(), it.project.lower()),
-    "newest": lambda it: -it.updated.timestamp(),
-    "oldest": lambda it: it.updated.timestamp(),
-    # soonest/most overdue first; no due date last, then newest activity
-    "due": lambda it: (it.due is None, it.due or datetime.max, -it.updated.timestamp()),
-}
-
-
 class RegexPrompt(ModalScreen[tuple[str, str] | None]):
     """Ask for a regex; returns (pattern, mode) where mode is "mark", "unmark" or "filter"."""
 
@@ -277,12 +84,115 @@ class RegexPrompt(ModalScreen[tuple[str, str] | None]):
         self.dismiss((event.value, self.mode))
 
 
+class FollowupPrompt(ModalScreen[tuple[str, str, date, bool] | None]):
+    """Ask for a follow-up task's title, description and due date; returns (title, description,
+    due, archive the item). Enter in a one-line field or ctrl+s creates it."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel"),
+                Binding("ctrl+s", "submit", "Create", priority=True)]
+
+    def __init__(self, item: InboxItem, text: str, notes: str):
+        super().__init__()
+        self.item, self.text, self.notes = item, text, notes
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="followup"):
+            yield Label(Text.assemble(("Follow-up for: ", "bold"), self.item.title), id="followup-title")
+            yield Label("Title")
+            yield Input(value=self.text, id="followup-text")
+            yield Label("Description (Enter adds a line; ctrl+s creates)")
+            yield TextArea(self.notes, id="followup-notes")
+            yield Label("Due (YYYY-MM-DD, today, tomorrow, +N, or a weekday)")
+            yield Input(value="today", id="followup-due")
+            yield Label(self.hint("today"), id="followup-hint")
+            yield Checkbox("Archive this notification", value=True, id="followup-archive")
+            with Horizontal(id="followup-buttons"):
+                yield Button("Create", variant="primary", id="create")
+                yield Button("Cancel", id="cancel")
+
+    @staticmethod
+    def hint(text: str) -> Text:
+        try:
+            return Text(f"→ {parse_due(text):%a %Y-%m-%d}", style="dim")
+        except ValueError as e:
+            return Text(str(e), style="bold red")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "followup-due":
+            self.query_one("#followup-hint", Label).update(self.hint(event.value))
+
+    def submit(self) -> None:
+        text = self.query_one("#followup-text", Input).value.strip()
+        try:
+            due = parse_due(self.query_one("#followup-due", Input).value)
+        except ValueError:
+            self.query_one("#followup-due", Input).focus()
+            return  # the hint already says what's wrong
+        if not text:
+            self.notify("The follow-up needs a title", severity="warning")
+            return
+        notes = self.query_one("#followup-notes", TextArea).text.strip()
+        self.dismiss((text, notes, due, self.query_one("#followup-archive", Checkbox).value))
+
+    def action_submit(self) -> None:
+        self.submit()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "create":
+            self.submit()
+        else:
+            self.dismiss(None)
+
+
+def open_link(app: App, item: InboxItem | None) -> None:
+    """Open the item's Asana link in the default browser (`o`)."""
+    if item is None or not item.url:
+        app.notify("No URL for this item", severity="warning")
+        return
+    if hasattr(app, "open_url"):  # Textual ≥ 0.83: also works when served with textual-web
+        app.open_url(item.url)
+    else:
+        webbrowser.open(item.url)
+    app.notify(f"Opened {item.url}")
+
+
+MENTION = Style(bold=True, color="cyan")
+
+
+def rich_text(runs: list | None, plain: str, people: dict, indent: str = "") -> Text:
+    """Rich text runs (see asana_api) as a Rich Text: mentions as bold "@Full Name" that link to
+    mailto:<email> (terminals with OSC 8 links show it on hover), other links clickable.
+    Falls back to `plain` when there are no runs."""
+    t = Text()
+    if runs is None:
+        t.append(plain.strip().replace("\n", "\n" + indent))
+        return t
+    for r in runs:
+        if isinstance(r, str):
+            t.append(r.replace("\n", "\n" + indent))
+        elif "user" in r:
+            person = people.get(r["user"]) or {}
+            name = f"@{person['name']}" if person.get("name") else r["text"]
+            email = person.get("email")
+            t.append(name, style=MENTION + Style(link=f"mailto:{email}") if email else MENTION)
+        else:
+            t.append(r["text"], style=Style(underline=True, link=r["link"]))
+    return t
+
+
 class Detail(ModalScreen[None]):
     """Read-only view of one item: metadata, description, and its notifications."""
 
     BINDINGS = [
         Binding("escape,q,enter", "dismiss(None)", "Close"),
         Binding("y", "copy_url", "Copy URL"),
+        Binding("o", "open_url", "Open link"),
+        Binding("f", "followup(False)", "Follow-up"),
+        Binding("F", "followup(True)", "Custom follow-up"),
+        Binding("a", "archive", "Archive"),
     ]
 
     def __init__(self, item: InboxItem):
@@ -293,10 +203,12 @@ class Detail(ModalScreen[None]):
         it = self.item
         t = Text()
         t.append(it.title + "\n", style="bold")
+        if it.pending:
+            t.append("(details still loading)\n", style="italic dim")
         meta = [("Kind", it.kind), ("Projects", ", ".join(it.projects) or "-"),
                 ("Assignee", ("me" if it.mine else it.assignee) or "-")]
         if it.due:
-            meta.append(("Due", it.due_text()))
+            meta.append(("Due", due_text(it)))
         if it.completed:
             meta.append(("Completed", it.completed.strftime("%Y-%m-%d %H:%M")))
         meta.append(("Link", it.url or "-"))
@@ -305,8 +217,9 @@ class Detail(ModalScreen[None]):
             t.append(v if isinstance(v, Text) else str(v))
             t.append("\n")
         if it.description.strip():
-            t.append("\nDescription\n", style="bold underline")
-            t.append(it.description.strip() + "\n")
+            t.append("\nMessage\n" if it.kind == "message" else "\nDescription\n", style="bold underline")
+            t.append_text(rich_text(it.description_rich, it.description, it.people))
+            t.append("\n")
         if it.events:
             t.append("\nNotifications\n", style="bold underline")
             for e in it.events:
@@ -315,7 +228,9 @@ class Detail(ModalScreen[None]):
                 t.append(e['who'] or 'Asana', style="bold")
                 t.append(f" · {e['what']}\n")
                 if e["text"].strip():
-                    t.append("    " + e["text"].strip().replace("\n", "\n    ") + "\n")
+                    t.append("    ")
+                    t.append_text(rich_text(e.get("rich"), e["text"], it.people, indent="    "))
+                    t.append("\n")
         with VerticalScroll(id="detail"):
             yield Static(t)  # plain Text: no markup interpretation of task content
 
@@ -323,6 +238,17 @@ class Detail(ModalScreen[None]):
         if self.item.url:
             self.app.copy_to_clipboard(self.item.url)
             self.notify(f"Copied {self.item.url}")
+
+    def action_open_url(self) -> None:
+        open_link(self.app, self.item)
+
+    def action_followup(self, ask: bool) -> None:
+        self.dismiss(None)
+        self.app.followup(self.item, ask)
+
+    def action_archive(self) -> None:
+        self.dismiss(None)
+        self.app.archive_one(self.item)
 
 
 class Confirm(ModalScreen[bool]):
@@ -360,7 +286,14 @@ class Confirm(ModalScreen[bool]):
 
 class InboxApp(App):
     CSS = """
-    RegexPrompt, Confirm, Detail { align: center middle; }
+    RegexPrompt, Confirm, Detail, FollowupPrompt { align: center middle; }
+    #followup { width: 90; max-width: 90%; height: auto; padding: 1 2; border: thick $accent;
+                background: $surface; }
+    #followup-title { margin-bottom: 1; }
+    #followup-hint { margin-bottom: 1; }
+    #followup-notes { height: 6; }
+    #followup-buttons { height: auto; margin-top: 1; }
+    #followup-buttons Button { margin-right: 2; }
     #detail { width: 90%; height: auto; max-height: 90%; border: thick $accent; background: $surface; padding: 0 1; }
     RegexPrompt Input { width: 70%; }
     #confirm { width: 100; max-width: 90%; height: auto; max-height: 90%; padding: 1 2;
@@ -372,17 +305,20 @@ class InboxApp(App):
     """
     BINDINGS = [
         Binding("space", "toggle", "Mark"),
-        Binding("f", "filter", "Filter"),
+        Binding("l", "filter", "Filter"),  # "limit", as in mutt; f is follow-up
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("slash", "regex('mark')", "Mark /re/"),
         Binding("backslash", "regex('unmark')", "Unmark /re/"),
         Binding("p", "toggle_project", "Mark project"),
         Binding("c", "toggle_completed", "Mark completed"),
-        Binding("a", "toggle_all", "All/none"),
+        Binding("v", "toggle_all", "All/none"),  # as in ranger; a is archive
         Binding("s", "cycle_sort", "Sort"),
         Binding("w", "toggle_truncate", "Full width"),
         Binding("y", "copy_url", "Copy URL"),
-        Binding("x", "archive", "Archive marked"),
+        Binding("o", "open_url", "Open link"),
+        Binding("f", "followup(False)", "Follow-up"),
+        Binding("F", "followup(True)", "Custom follow-up"),
+        Binding("a", "archive", "Archive marked"),
         Binding("r", "reload", "Reload"),
         Binding("q", "quit", "Quit"),
     ]
@@ -395,13 +331,10 @@ class InboxApp(App):
         self.sort = "project"
         self.filter: re.Pattern | None = None
         self.truncate: bool = load_settings().get("truncate", True)
+        self.generation = 0  # bumped per load; detail updates from older loads are dropped
+        self.redraw_scheduled = False
 
-    @staticmethod
-    def match_text(it: InboxItem) -> str:
-        done = "done" if it.completed else ""
-        mine = "mine" if it.mine else ""
-        return (f"{it.project} {it.title} {' '.join(it.projects)} {it.kind} {done} "
-                f"{it.assignee or ''} {mine}")
+    match_text = staticmethod(match_text)
 
     def visible(self) -> list[InboxItem]:
         """Items passing the filter; every bulk mark action works on these only."""
@@ -429,6 +362,7 @@ class InboxApp(App):
         self.action_reload()
 
     def action_reload(self) -> None:
+        self.generation += 1  # stops a running fill
         self.busy("loading…")
         self.run_worker(self._load, thread=True, exclusive=True, group="backend")
 
@@ -447,6 +381,36 @@ class InboxApp(App):
     def _set_items(self, items: list[InboxItem]) -> None:
         self.items = items
         self.marked &= {it.id for it in self.items}
+        self.refresh_table()
+        if hasattr(self.backend, "fill") and any(it.pending for it in items):
+            self.generation += 1
+            gen = self.generation
+            self.run_worker(lambda: self._fill(gen, list(items)), thread=True, exclusive=True,
+                            group="details")
+
+    def _fill(self, gen: int, items: list[InboxItem]) -> None:  # worker thread
+        try:
+            for updates in self.backend.fill(items):
+                if gen != self.generation:
+                    return  # reloaded meanwhile; closing the generator stops the fetches
+                self.call_from_thread(self._apply_details, gen, updates)
+        except BaseException as e:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"Loading details failed: {e}", severity="error",
+                                  timeout=15)
+
+    def _apply_details(self, gen: int, updates: dict[str, dict]) -> None:
+        if gen != self.generation:
+            return
+        for it in self.items:
+            for key, value in updates.get(it.id, {}).items():
+                setattr(it, key, value)
+        # Batches arrive in quick succession: one redraw for whatever came in meanwhile.
+        if not self.redraw_scheduled:
+            self.redraw_scheduled = True
+            self.set_timer(0.3, self._redraw)
+
+    def _redraw(self) -> None:
+        self.redraw_scheduled = False
         self.refresh_table()
 
     SCROLLOFF = 3  # rows of context kept above/below the cursor
@@ -498,7 +462,7 @@ class InboxApp(App):
                 "✓" if it.completed else "",
                 Text(self.cut(it.title, TITLE_WIDTH), style="bold" if it.mine else ""),
                 Text("★ me", style="bold yellow") if it.mine else (it.assignee or ""),
-                it.due_text(),
+                due_text(it),
                 it.kind,
                 it.updated.strftime("%Y-%m-%d %H:%M"),
                 ", ".join(p for p in it.projects if p != it.project),  # last column: never cut
@@ -521,6 +485,8 @@ class InboxApp(App):
     def update_status(self, shown: list[InboxItem]) -> None:
         self.title = "Asana Inbox"
         parts = [f"{len(self.items)} items", f"{len(self.marked)} marked", f"sort: {self.sort}"]
+        if pending := sum(1 for it in self.items if it.pending):
+            parts.append(f"loading details: {pending} left")
         if self.filter is not None:
             hidden_marked = len(self.marked - {it.id for it in shown})
             parts[0] = f"{len(shown)}/{len(self.items)} shown"
@@ -560,6 +526,9 @@ class InboxApp(App):
         item = next((it for it in self.items if it.id == event.row_key.value), None)
         if item is not None:
             self.push_screen(Detail(item))
+
+    def action_open_url(self) -> None:
+        open_link(self, self.current_item())
 
     def action_copy_url(self) -> None:
         """Copy the selected item's Asana link via OSC 52 (terminal clipboard escape).
@@ -627,6 +596,53 @@ class InboxApp(App):
             self.filter = None
             self.refresh_table()
 
+    def action_followup(self, ask: bool) -> None:
+        if (cur := self.current_item()) is not None:
+            self.followup(cur, ask)
+
+    def archive_one(self, item: InboxItem) -> None:
+        """Archive one item without asking (`x` in the details view, where it's in plain sight)."""
+        self.busy("archiving 1…")
+        self.run_worker(lambda: self._archive([item.id]), thread=True, exclusive=True, group="backend")
+
+    def followup(self, item: InboxItem, ask: bool) -> None:
+        """Create a task assigned to me, due today, titled "Follow up on <title>" with the item's
+        link as its description (`f`), or ask for title and due date first (`F`); then archive the
+        item unless told not to."""
+        if not hasattr(self.backend, "create_task"):
+            self.notify("This backend can't create tasks", severity="warning")
+            return
+        text = followup_name(item)
+
+        def create(result: tuple[str, str, date, bool] | None) -> None:
+            if result is None:
+                return
+            name, notes, due, archive = result
+            self.busy("creating follow-up…")
+            self.run_worker(lambda: self._followup(item, name, notes, due, archive), thread=True,
+                            group="followup")
+
+        if ask:
+            self.push_screen(FollowupPrompt(item, text, item.url), create)
+        else:
+            create((text, item.url, date.today(), True))
+
+    def _followup(self, item: InboxItem, name: str, notes: str, due: date,
+                  archive: bool) -> None:  # worker thread
+        try:
+            url = self.backend.create_task(name, due, notes)
+        except BaseException as e:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"Creating the follow-up failed: {e}",
+                                  severity="error", timeout=15)
+            self.call_from_thread(self.update_status, self.visible())
+            return
+        when = "today" if due == date.today() else f"{due:%a %Y-%m-%d}"
+        self.call_from_thread(self.notify, f"Follow-up due {when}: {url}", timeout=8)
+        if archive:
+            self._archive([item.id])
+        else:
+            self.call_from_thread(self.update_status, self.visible())
+
     def action_archive(self) -> None:
         if not self.marked:
             self.notify("Nothing marked", severity="warning")
@@ -674,15 +690,9 @@ class InboxApp(App):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fake", action="store_true", help="use generated data, no Asana")
-    ap.add_argument("--du", default=os.environ.get("ASANA_DU"), help="domain user id (env ASANA_DU)")
-    ap.add_argument("--view", type=int, default=os.environ.get("ASANA_VIEW"),
-                    help="inbox objectViewId (env ASANA_VIEW)")
-    ap.add_argument("--browser", help="cookie source: auto|firefox|chrome|chromium|brave|edge "
-                    "(env ASANA_BROWSER; default auto)")
-    ap.add_argument("--profile", help="browser profile name or directory")
-    ap.add_argument("--cookies", metavar="FILE",
-                    help="cookies.txt / Cookie-header file instead of a browser (env ASANA_COOKIES)")
-    ap.add_argument("-n", type=int, default=0, help="threads to load (0 = all)")
+    ap.add_argument("--workspace", default=os.environ.get("ASANA_WORKSPACE"),
+                    help="workspace gid (env ASANA_WORKSPACE; default: your only workspace)")
+    ap.add_argument("-n", type=int, default=0, help="notifications to scan (0 = all)")
     ap.add_argument("--ignore-project", action="append",
                     default=[p for p in os.environ.get("ASANA_IGNORE_PROJECTS", "").split(",") if p],
                     help="don't group by this project if the task has others (repeatable; "
@@ -691,13 +701,9 @@ def main() -> None:
     if args.fake:
         backend: Backend = FakeBackend()
     else:
-        if not args.du:
-            ap.error("--du (or ASANA_DU) is required unless --fake")
-        print("bootstrapping…")
         try:
-            backend = WebBackend(args.du, args.view, args.n, set(args.ignore_project),
-                                 browser=args.browser, profile=args.profile, cookie_file=args.cookies)
-        except RuntimeError as e:  # AsanaError: no cookies, logged out, HTTP errors
+            backend = ApiBackend(args.workspace, args.n, set(args.ignore_project))
+        except RuntimeError as e:  # ApiError: no token, bad token, several workspaces
             raise SystemExit(str(e)) from None
     InboxApp(backend).run()
 

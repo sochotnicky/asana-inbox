@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["textual>=0.80", "httpx>=0.27", "websockets>=13", "certifi", "browser-cookie3>=0.20"]
+# dependencies = ["textual>=0.80", "httpx>=0.27"]
 # ///
 """Regenerate the README screenshots (SVG) from the fake backend: ./docs/screenshots.py"""
 
@@ -45,9 +45,9 @@ async def main() -> None:
         await pilot.press("s")  # back to project
 
         # 3. Filter: only my tasks, all of them marked with `a`.
-        await pilot.press("f", *"mine", "enter", "a")
+        await pilot.press("l", *"mine", "enter", "v")
         await shot("filter", "textual-dark")
-        await pilot.press("a", "escape")
+        await pilot.press("v", "escape")
 
         # 4. Task details (Enter) on a task with several projects, a due date and comments.
         pick = next(it for it in app.visible()
@@ -59,7 +59,7 @@ async def main() -> None:
         await pilot.press("escape")
 
         # 5. Archive confirmation: also mark a whole project with `p`.
-        await pilot.press("end", "p", "x")
+        await pilot.press("end", "p", "a")
         await shot("archive", "solarized-dark")
 
 
