@@ -91,6 +91,8 @@ Messages (team or project posts) show their full text in the details view and ar
 
 The regex for `l`, `/` and `\` matches the project, title, other projects, kind and assignee, plus the words `done` (completed tasks) and `mine` (assigned to you). For example, `l mine` shows only your tasks, and `/Support Triage` marks every row in that project.
 
+In the web UI's details view, each comment shows its reactions with counts (yours highlighted). Click one to add or remove yours, or `+` to pick another emoji; from the keyboard, `e` opens that picker on the newest comment and `1`–`8` toggles an emoji.
+
 In the details view, mentions show as a highlighted `@Full Name`. In the web UI, hover over one to see the person's email; in the TUI it's a `mailto:` link, which terminals with clickable links show on hover. Links to tasks and projects show the linked item's name and are clickable.
 
 Follow-up tasks go to your My Tasks, outside any project. In the `F` dialog the due date takes `YYYY-MM-DD`, `today`, `tomorrow`, `+N` (days) or a weekday name (the next one); the web UI uses a date picker with Today / Tomorrow / +1 week buttons. With `--fake`, follow-ups are only pretend.

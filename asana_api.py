@@ -39,7 +39,8 @@ TOKEN_FILE = CONFIG / "token"
 
 NOTIFICATION_FIELDS = ("created_at,created_by.name,is_read,story_resource_subtype,"
                        "work_objects.name,work_objects.resource_type,story.text,story.html_text,"
-                       "story.type,story.reaction_summary.emoji_base,story.reaction_summary.reacted")
+                       "story.type,story.reaction_summary.emoji_base,story.reaction_summary.count,"
+                       "story.reaction_summary.reacted")
 TASK_FIELDS = ["name", "completed", "completed_at", "due_on", "due_at", "assignee.name",
                "projects.name", "html_notes"]
 # GET /messages/{gid} isn't in the API reference but works (checked 2026-11-27): title, text
@@ -302,9 +303,10 @@ def user_gids(runs: list | None) -> set[str]:
 
 
 def event(n: dict) -> dict:
-    """One notification as an event-list entry: {time, who, what, text, rich, story, reacted};
+    """One notification as an event-list entry: {time, who, what, text, rich, story, reactions};
     rich = the story's runs (None if Asana sent no rich text), text = their plain version,
-    story = the comment's gid (None for other stories) and reacted = whether I gave it a 👍."""
+    story = the comment's gid (None for other stories), reactions = [{emoji, count, reacted}]
+    (reacted: whether one of them is mine). Skin-tone variants count under their base emoji."""
     sub = n.get("story_resource_subtype") or "?"
     story = n.get("story") or {}
     rich = html_runs(story["html_text"]) if story.get("html_text") else None
@@ -315,8 +317,8 @@ def event(n: dict) -> dict:
         "text": plain_text(rich) if rich is not None else story.get("text") or "",
         "rich": rich,
         "story": story.get("gid") if story.get("type") == "comment" else None,
-        "reacted": any(r.get("emoji_base") == "👍" and r.get("reacted")
-                       for r in story.get("reaction_summary") or []),
+        "reactions": [{"emoji": r["emoji_base"], "count": r.get("count") or 0, "reacted": bool(r.get("reacted"))}
+                      for r in story.get("reaction_summary") or [] if r.get("emoji_base")],
     }
 
 
@@ -504,8 +506,8 @@ class ApiInbox:
         return self.client.request("POST", "/tasks", json={"data": data},
                                    params={"opt_fields": "name,due_on,permalink_url"})["data"]
 
-    def react(self, story: str, reacted: bool, emoji: str = "👍") -> None:
-        """Add (or remove) your reaction to a comment. The `reactions` field of PUT /stories isn't
+    def react(self, story: str, emoji: str, reacted: bool) -> None:
+        """Add (or remove) my `emoji` reaction to a comment. The `reactions` field of PUT /stories isn't
         in the API reference yet; Asana staff described it in the forum (2026-10-26)."""
         body = {"data": {"reactions": [{"emoji": emoji, "reacted": reacted}]}}
         self.client.request("PUT", f"/stories/{story}", json=body)

@@ -28,9 +28,9 @@ is on and the browser isn't logged in):
                                 on <item title>"; notes: its description, default the item's link; due:
                                 YYYY-MM-DD or today/tomorrow/+N/weekday, default today), then
                                 archive the item unless archive is false; returns {url, due, archived}
-    POST /api/react {id, story, reacted}
-                                add (reacted: true) or remove my 👍 on one of the item's comments;
-                                returns {reacted}
+    POST /api/react {id, story, emoji, reacted}
+                                add (reacted: true) or remove my emoji reaction on one of the
+                                item's comments; returns that comment's {reactions}
     GET  /auth/login            OAuth: redirect to Asana (PKCE)
     GET  /auth/callback         OAuth: Asana redirects back here with code + state
     POST /auth/logout           end this browser's session
@@ -66,7 +66,8 @@ from starlette.routing import Route  # noqa: E402
 from asana_oauth import (  # noqa: E402
     DEFAULT_SCOPES, NARROW_SCOPES, AuthExpired, OAuthClient, OAuthConfig, OAuthError, TokenSet, load_client, pkce_pair)
 from inbox_core import (  # noqa: E402
-    PROJECT_WIDTH, TITLE_WIDTH, ApiBackend, Backend, FakeBackend, InboxItem, followup_name, parse_due)
+    PROJECT_WIDTH, TITLE_WIDTH, ApiBackend, Backend, FakeBackend, InboxItem, followup_name, parse_due,
+    with_reaction)
 
 
 
@@ -254,20 +255,21 @@ class InboxService:
         url = self.backend.create_task(text, due, notes)
         return url, bool(archive and self.archive([item_id]))
 
-    def react(self, item_id: str, story: str, reacted: bool) -> None:
-        """Add or remove my 👍 on a comment of an item. Raises KeyError for an unknown item or
-        comment."""
+    def react(self, item_id: str, story: str, emoji: str, reacted: bool) -> list[dict]:
+        """Add or remove my `emoji` reaction on a comment of an item; returns the comment's
+        reactions. Raises KeyError for an unknown item or comment."""
         if not hasattr(self.backend, "react"):
             raise RuntimeError("this backend can't react")
         with self.lock:
             event = next((e for e in self.items[item_id].events if e.get("story") == story), None)
         if event is None:
             raise KeyError(story)
-        self.backend.react(story, reacted)
+        self.backend.react(story, emoji, reacted)
         with self.lock:
-            event["reacted"] = reacted
+            event["reactions"] = with_reaction(event.get("reactions") or [], emoji, reacted)
             if (it := self.items.get(item_id)) is not None:
                 self._broadcast({"type": "details", "generation": self.generation, "items": [item_json(it)]})
+            return event["reactions"]
 
     def archive(self, ids: list[str]) -> int:
         with self.lock:
@@ -502,18 +504,19 @@ def create_app(*, mode: str, allowed_hosts: set[str], service: InboxService | No
             return err
         try:
             body = await request.json()
-            item_id, story, reacted = body["id"], body["story"], body["reacted"]
+            item_id, story, emoji, reacted = body["id"], body["story"], body["emoji"], body["reacted"]
             assert isinstance(item_id, str) and isinstance(story, str) and isinstance(reacted, bool)
+            assert isinstance(emoji, str) and 0 < len(emoji) <= 16
         except (ValueError, KeyError, TypeError, AssertionError):
-            return JSONResponse({"error": 'expected {"id": "…", "story": "…", "reacted": true}'},
+            return JSONResponse({"error": 'expected {"id": "…", "story": "…", "emoji": "👍", "reacted": true}'},
                                 status_code=400)
         try:
-            await run_in_threadpool(svc.react, item_id, story, reacted)
+            reactions = await run_in_threadpool(svc.react, item_id, story, emoji, reacted)
         except KeyError:
             return JSONResponse({"error": "no such comment (reload?)"}, status_code=404)
         except Exception as e:
             return failed(request, e, "Reacting")
-        return JSONResponse({"reacted": reacted})
+        return JSONResponse({"reactions": reactions})
 
     async def events(request: Request) -> Response:
         if bad := guard(request):
@@ -811,8 +814,13 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: v
 .desc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .event { padding: 6px 0; border-top: 1px solid var(--border); }
 .event .when { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
-.event .react { padding: 0 6px; margin-left: 4px; opacity: .45; filter: grayscale(1); }
-.event .react.on { opacity: 1; filter: none; }
+.event .reactions { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 4px; vertical-align: middle; }
+.event .react { padding: 0 6px; font-size: 12px; }
+.event .react.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--surface-2)); }
+.event .react.add { color: var(--muted); }
+.event .palette { display: inline-flex; gap: 2px; }
+.event .palette kbd { margin-left: 3px; font-size: 10px; }
+.event .palette[hidden] { display: none; }
 .event .text { white-space: pre-wrap; margin: 3px 0 0 18px; overflow-wrap: anywhere; }
 .mention { color: var(--accent-text); background: var(--mark); font-weight: 600; border-radius: 4px;
            padding: 0 4px; white-space: nowrap; cursor: help; }
@@ -971,7 +979,8 @@ ul.confirm .hiddenby { color: var(--today); font-style: italic; margin-left: 8px
       <div><span class="k"><kbd>a</kbd></span><span>archive this item</span></div>
       <div><span class="k"><kbd>f</kbd><kbd>F</kbd></span><span>follow-up / custom</span></div>
       <div><span class="k"><kbd>o</kbd><kbd>y</kbd></span><span>open / copy link</span></div>
-      <div><span class="k"><kbd>Esc</kbd></span><span>close</span></div>
+      <div><span class="k"><kbd>e</kbd> <kbd>1</kbd>–<kbd>8</kbd></span><span>react to the newest comment</span></div>
+      <div><span class="k"><kbd>Esc</kbd></span><span>close (the reactions first, if open)</span></div>
       <h3>In the follow-up dialog</h3>
       <div><span class="k"><kbd>Enter</kbd></span><span>create (one-line fields)</span></div>
       <div><span class="k"><kbd>Ctrl+Enter</kbd></span><span>create (anywhere)</span></div>
@@ -1417,26 +1426,67 @@ function renderDetail() {
       const div = el("div", {class: "event"},
         el("span", {class: "when", text: e.time ? fmt(e.time) : "?"}),
         el("strong", {text: e.who || "Asana"}), ` · ${e.what}`);
-      if (e.story) {
-        const like = el("button", {class: "react" + (e.reacted ? " on" : ""), text: "👍",
-                                   title: e.reacted ? "Remove your 👍" : "React with 👍"});
-        like.setAttribute("aria-pressed", e.reacted ? "true" : "false");
-        like.onclick = () => react(it, e, like);
-        div.append(" ", like);
-      }
+      if (e.story) div.append(" ", reactionsEl(it, e));
       if ((e.text || "").trim()) div.append(el("div", {class: "text"}, ...richNodes(e.rich, e.text, it.people)));
       body.append(div);
     }
   }
 }
-async function react(it, e, button) {
-  button.disabled = true;
+const REACTION_EMOJI = ["👍", "🙏", "🙌", "🎉", "❤️", "😄", "👀", "✅"];
+// A comment's reactions as chips (count; mine highlighted; click toggles mine) and a "+" that
+// opens a palette of REACTION_EMOJI for adding one (keys: e, then 1-8, on the newest comment).
+function reactionsEl(it, e) {
+  const wrap = el("span", {class: "reactions", "data-story": e.story});
+  const chip = (emoji, count, mine, label) => {
+    const b = el("button", {class: "react" + (mine ? " on" : ""), text: label,
+                            title: mine ? `Remove your ${emoji}` : `React with ${emoji}`});
+    b.setAttribute("aria-pressed", mine ? "true" : "false");
+    b.onclick = () => react(it, e, emoji, !mine, wrap);
+    return b;
+  };
+  const reactions = e.reactions || [];
+  for (const r of reactions) wrap.append(chip(r.emoji, r.count, r.reacted, `${r.emoji} ${r.count}`));
+  const add = el("button", {class: "react add", text: "+", title: "Add a reaction"});
+  add.setAttribute("aria-expanded", "false");
+  const palette = el("span", {class: "palette", hidden: ""});
+  REACTION_EMOJI.forEach((emoji, i) => {
+    const mine = reactions.some((r) => r.emoji === emoji && r.reacted);
+    const b = chip(emoji, 0, mine, emoji);
+    b.append(el("kbd", {text: String(i + 1)}));
+    palette.append(b);
+  });
+  add.onclick = () => {
+    palette.hidden = !palette.hidden;
+    add.setAttribute("aria-expanded", palette.hidden ? "false" : "true");
+  };
+  wrap.append(add, palette);
+  return wrap;
+}
+// Keyboard: the newest comment's palette (none if the item has no comments).
+function newestPalette() {
+  const it = S.byId.get(S.detailId);
+  const e = it && [...it.events].reverse().find((ev) => ev.story);
+  const wrap = e && $("detail-body").querySelector(`.reactions[data-story="${CSS.escape(e.story)}"]`);
+  return wrap && {wrap, add: wrap.querySelector(".add"), palette: wrap.querySelector(".palette")};
+}
+function detailReactKey(key) {
+  const p = newestPalette();
+  if (!p) { if (key === "e") toast("No comments to react to"); return false; }
+  if (key === "e") { p.add.click(); if (!p.palette.hidden) p.wrap.scrollIntoView({block: "nearest"}); return true; }
+  if (p.palette.hidden) return false;
+  if (key === "Escape") { p.add.click(); return true; }
+  const n = Number(key);
+  if (n >= 1 && n <= REACTION_EMOJI.length) { p.palette.children[n - 1].click(); return true; }
+  return false;
+}
+async function react(it, e, emoji, reacted, wrap) {
+  for (const b of wrap.querySelectorAll("button")) b.disabled = true;
   try {
-    await api("/api/react", {id: it.id, story: e.story, reacted: !e.reacted});
-    e.reacted = !e.reacted;
+    const r = await api("/api/react", {id: it.id, story: e.story, emoji, reacted});
+    e.reactions = r.reactions;
     if (S.modal === "detail" && S.detailId === it.id) renderDetail();
   } catch (err) {
-    button.disabled = false;
+    for (const b of wrap.querySelectorAll("button")) b.disabled = false;
     toast(`Reacting failed: ${err.message}`, "error");
   }
 }
@@ -1542,6 +1592,8 @@ $("confirm-no").onclick = closeModal;
 document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || S.loggedOut) return;
   if (S.modal === "detail") {
+    if (detailReactKey(e.key)) { e.preventDefault(); return; }
+    if (e.key === "Enter" && e.target.closest?.(".reactions")) return;  // a focused reaction button
     if (["Escape", "Enter", "q"].includes(e.key)) { e.preventDefault(); closeModal(); }
     else if (e.key === "y") { e.preventDefault(); actions.copyLink(S.byId.get(S.detailId)); }
     else if (e.key === "o") { e.preventDefault(); actions.openLink(S.byId.get(S.detailId)); }

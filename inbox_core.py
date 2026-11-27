@@ -6,7 +6,7 @@ mapping, sorting and regex matching.
 A backend has `list_items(progress=None) -> list[InboxItem]` and `archive(ids)`. Optionally
 `fill(items)` yields {item id: {InboxItem field: value}} as details arrive, for items returned
 with pending=True; it runs in a worker thread after list_items. Optionally `react(story,
-reacted)` adds or removes your 👍 on a comment (an event's "story").
+emoji, reacted)` adds or removes my reaction on a comment (an event's "story").
 """
 
 import dataclasses
@@ -38,7 +38,7 @@ class InboxItem:
     # None for plain text only; events may carry "rich" too. people: {user gid: {name, email}}.
     description_rich: list | None = None
     people: dict = field(default_factory=dict)
-    events: list[dict] = field(default_factory=list)  # {time, who, what, text, rich?, story?, reacted?}
+    events: list[dict] = field(default_factory=list)  # {time, who, what, text, rich?, story?, reactions?}
     pending: bool = False  # details (projects, due, assignee, …) still loading
 
     def due_label(self) -> str:
@@ -66,6 +66,21 @@ class Backend(Protocol):
     def archive(self, ids: list[str]) -> None: ...
     # Optional: `create_task(name, due: date, notes="") -> str` creates a task assigned to you and
     # returns its link (follow-ups, `f`/`F`). Backends without it can't create follow-ups.
+
+
+def with_reaction(reactions: list[dict], emoji: str, reacted: bool) -> list[dict]:
+    """An event's reactions after I add (or remove) mine with `emoji`; emptied ones are dropped."""
+    out, seen = [], False
+    for r in reactions:
+        if r["emoji"] == emoji:
+            seen = True
+            if r["reacted"] != reacted:
+                r = {**r, "reacted": reacted, "count": r["count"] + (1 if reacted else -1)}
+        if r["count"] > 0:
+            out.append(r)
+    if reacted and not seen:
+        out.append({"emoji": emoji, "count": 1, "reacted": True})
+    return out
 
 
 def followup_name(it: InboxItem) -> str:
@@ -204,8 +219,8 @@ class ApiBackend:
         task = self.api.create_task(name, due.isoformat(), notes)
         return task.get("permalink_url") or f"https://app.asana.com/0/0/{task['gid']}"
 
-    def react(self, story: str, reacted: bool) -> None:
-        self.api.react(story, reacted)
+    def react(self, story: str, emoji: str, reacted: bool) -> None:
+        self.api.react(story, emoji, reacted)
 
     def archive(self, ids: list[str]) -> None:
         if failed := self.api.archive(ids):
@@ -296,7 +311,7 @@ class FakeBackend:
 
         self.items: dict[str, InboxItem] = {}
         self.created: list[dict] = []  # follow-up tasks "created" in the demo
-        self.reactions: dict[str, bool] = {}  # story -> reacted, set in the demo
+        self.reactions: dict[tuple[str, str], bool] = {}  # (story, emoji) -> reacted, set in the demo
         self.detailed: set[str] = set()  # ids whose details asana_api would fetch after listing
         for i in range(n):
             kind = rnd.choices(["task", "added to project", "message", "daily summary"],
@@ -329,7 +344,12 @@ class FakeBackend:
                                *[e for e in item_events if e["what"] == "comment"]]
             for k, e in enumerate(item_events):
                 if e["what"] in ("comment", "mention"):
-                    e["story"], e["reacted"] = f"{i}.{k}", (i + k) % 5 == 0
+                    e["story"] = f"{i}.{k}"
+                    e["reactions"] = []
+                    if (i + k) % 5 in (0, 2):
+                        e["reactions"].append({"emoji": "👍", "count": 1 + (i + k) % 3, "reacted": (i + k) % 5 == 0})
+                    if (i + k) % 7 == 3:
+                        e["reactions"].append({"emoji": "🙏", "count": 1, "reacted": False})
             if task or kind == "message":
                 self.detailed.add(str(i))
             self.items[str(i)] = InboxItem(
@@ -383,8 +403,8 @@ class FakeBackend:
         self.created.append({"name": name, "due": due, "notes": notes})
         return f"https://app.asana.com/1/0/task/{9000 + len(self.created)}"
 
-    def react(self, story: str, reacted: bool) -> None:
-        self.reactions[story] = reacted
+    def react(self, story: str, emoji: str, reacted: bool) -> None:
+        self.reactions[(story, emoji)] = reacted
 
     def archive(self, ids: list[str]) -> None:
         for i in ids:
