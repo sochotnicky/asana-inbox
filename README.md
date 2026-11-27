@@ -17,7 +17,7 @@ All screenshots use the built-in fake data (`./asana_inbox.py --fake`).
 | **Details** (`Enter`): description, projects and notifications | **Archive confirmation** (`a`) listing what will be archived |
 | [![Task details](docs/details.svg)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/details.svg) | [![Archive confirmation](docs/archive.svg)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/archive.svg) |
 
-Regenerate them with `./docs/screenshots.py`.
+Regenerate them with `./docs/screenshots.py`, and the [web UI's](#web-ui-screenshots) with `./docs/web-screenshots.py` (its first run downloads Playwright's headless Chromium).
 
 ## Requirements
 
@@ -51,6 +51,7 @@ Rows appear as soon as the notifications are listed. Projects, due dates, assign
 
 - The tool shows **unread** notifications, one row per task (or message, daily summary, …). Archiving a row marks its notifications read, through the same read state the web Inbox uses.
 - The API can't archive notifications, so read ones stay in the web Inbox's *All* view until you archive them there. They don't show up in this tool.
+  To make the web Inbox match this tool, set its *Activity* tab's filter to **Unread**: rows you archive here then disappear there too.
 - Every load pages through all notifications that aren't archived, read ones included, 100 per request, so a very full Inbox loads more slowly. `-n N` scans only the newest N.
 
 ### Other options
@@ -72,7 +73,7 @@ Messages (team or project posts) show their full text in the details view and ar
 | Key | Action |
 | --- | --- |
 | `↑`/`↓`, `PgUp`/`PgDn` | Move |
-| `Enter` | Details: description, comments and other notifications, link |
+| `Enter` | Details: description, comments and other notifications, link. `↑`/`↓`, `PgUp`/`PgDn` and `Home`/`End` scroll a long one |
 | `space` | Mark / unmark row |
 | `p` | Mark / unmark all shown rows in this row's project |
 | `c` | Mark / unmark all shown completed tasks |
@@ -127,6 +128,21 @@ It picks how to sign in like this:
 
 `--workspace`, `-n` and `--ignore-project` (and their env vars) work as in the TUI. With `--fake`, rows appear first and their details fill in over a few seconds, like a real load. Archiving in fake mode only removes rows from memory, and `r` starts the demo fill-in again.
 
+### Web UI screenshots
+
+Also from the fake data (`./asana_inbox_web.py --fake`).
+
+[![Web UI: inbox grouped by project, with a few rows marked](docs/web-main.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-main.png)
+
+| | |
+| --- | --- |
+| **Filtered** with `l mine`, then all shown rows marked with `v` | **Details** (`Enter`): description, projects and notifications |
+| [![Web UI: filter to my tasks](docs/web-filter.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-filter.png) | [![Web UI: task details](docs/web-details.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-details.png) |
+| **Archive confirmation** (`a`) listing what will be archived | **Dark mode** (◐ button, or follows the system) |
+| [![Web UI: archive confirmation](docs/web-archive.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-archive.png) | [![Web UI: dark mode](docs/web-dark.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-dark.png) |
+| **Login screen** with OAuth and a logo configured | |
+| [![Web UI: login screen](docs/web-login.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-login.png) | |
+
 ### OAuth setup
 
 1. In the Asana developer console (<https://app.asana.com/0/my-apps>), create an app.
@@ -178,7 +194,7 @@ docker run --rm -p 8765:8765 \
 
 Then open <http://localhost:8765/>. Every setting is an env var (`ASANA_INBOX_LOGO_URL`, `ASANA_WORKSPACE`, `ASANA_SCOPES`, …), and anything after the image name is passed to `asana_inbox_web.py`. In the container the server listens on all interfaces; the page still only answers to `localhost` and the OAuth redirect URI's host. If you serve it under another name, for example behind a reverse proxy, add that name with `ASANA_ALLOWED_HOSTS=inbox.example.com` (comma-separated for several). For anything beyond your own machine, put it behind HTTPS and use an `https://` redirect URI, so the session cookie is marked Secure.
 
-The keys are the same as in the TUI (see [Using it](#using-it)), with `j`/`k`, `Home`/`End` and the mouse as well. Press `?` (or the hint at the top of the page) for a list of all shortcuts. Click the ○ column to mark a row, double-click a row for details, and click any column header to sort by it (click again to reverse; Done puts completed tasks first, Assignee puts yours first, Kind orders by importance: assigned, mention, comment, …). The filter is the box in the toolbar: `l` focuses it, and it applies as you type. The page follows your system's light or dark mode; the ◐ button in the header switches between Auto, Light and Dark, and the choice is remembered in that browser.
+The keys are the same as in the TUI (see [Using it](#using-it)), with `j`/`k`, `Home`/`End` and the mouse as well; in the details view these and `space`/`Shift+space` scroll. Press `?` (or the hint at the top of the page) for a list of all shortcuts. Click the ○ column to mark a row, double-click a row for details, and click any column header to sort by it (click again to reverse; Done puts completed tasks first, Assignee puts yours first, Kind orders by importance: assigned, mention, comment, …). The filter is the box in the toolbar: `l` focuses it, and it applies as you type. The page follows your system's light or dark mode; the ◐ button in the header switches between Auto, Light and Dark, and the choice is remembered in that browser.
 
 ## Command-line client
 

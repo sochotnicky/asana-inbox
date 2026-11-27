@@ -982,6 +982,9 @@ ul.confirm .hiddenby { color: var(--today); font-style: italic; margin-left: 8px
       <div><span class="k"><kbd>a</kbd></span><span>archive this item</span></div>
       <div><span class="k"><kbd>f</kbd><kbd>F</kbd></span><span>follow-up / custom</span></div>
       <div><span class="k"><kbd>o</kbd><kbd>y</kbd></span><span>open / copy link</span></div>
+      <div><span class="k"><kbd>↑</kbd><kbd>↓</kbd> / <kbd>j</kbd><kbd>k</kbd></span><span>scroll</span></div>
+      <div><span class="k"><kbd>PgUp</kbd><kbd>PgDn</kbd> / <kbd>space</kbd></span><span>scroll a page</span></div>
+      <div><span class="k"><kbd>Home</kbd><kbd>End</kbd></span><span>top / bottom</span></div>
       <div><span class="k"><kbd>e</kbd> <kbd>1</kbd>–<kbd>8</kbd></span><span>react to the newest comment</span></div>
       <div><span class="k"><kbd>Esc</kbd></span><span>close (the reactions first, if open)</span></div>
       <h3>In the follow-up dialog</h3>
@@ -1400,11 +1403,26 @@ $("regex-input").addEventListener("keydown", (e) => {
   e.stopPropagation();
 });
 
-function openDetail(id) { S.detailId = id; renderDetail(); openModal("detail"); $("detail-close").focus(); }
+function openDetail(id) {
+  S.detailId = id; renderDetail(); openModal("detail"); $("detail-body").scrollTop = 0; $("detail-close").focus();
+}
+// Scrolls a dialog body by key, as the table moves by them; false for keys it doesn't use.
+function scrollKey(body, e) {
+  const line = 40, page = Math.max(line, body.clientHeight - line);
+  const by = {ArrowDown: line, j: line, ArrowUp: -line, k: -line, PageDown: page, PageUp: -page,
+              " ": e.shiftKey ? -page : page}[e.key];
+  if (by !== undefined) body.scrollBy({top: by});
+  else if (e.key === "Home") body.scrollTop = 0;
+  else if (e.key === "End") body.scrollTop = body.scrollHeight;
+  else return false;
+  e.preventDefault();
+  return true;
+}
 function renderDetail() {
   const it = S.byId.get(S.detailId); if (!it) return;
   $("detail-title").textContent = it.title;
-  const body = $("detail-body"); body.replaceChildren();
+  const body = $("detail-body"), top = body.scrollTop;  // kept when details arrive while open
+  body.replaceChildren();
   if (it.pending) body.append(el("div", {class: "loadingnote", text: "(details still loading)"}));
   const dl = el("dl", {class: "meta"});
   const row = (k, v) => dl.append(el("dt", {text: k}), el("dd", {}, v));
@@ -1439,6 +1457,7 @@ function renderDetail() {
       body.append(div);
     }
   }
+  body.scrollTop = top;
 }
 const REACTION_EMOJI = ["👍", "🙏", "🙌", "🎉", "❤️", "😄", "👀", "✅"];
 // A comment's reactions as chips (count; mine highlighted; click toggles mine) and a "+" that
@@ -1601,16 +1620,18 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || S.loggedOut) return;
   if (S.modal === "detail") {
     if (detailReactKey(e.key)) { e.preventDefault(); return; }
-    if (e.key === "Enter" && e.target.closest?.(".reactions")) return;  // a focused reaction button
+    if ((e.key === "Enter" || e.key === " ") && e.target.closest?.(".reactions")) return;  // a focused reaction button
     if (["Escape", "Enter", "q"].includes(e.key)) { e.preventDefault(); closeModal(); }
     else if (e.key === "y") { e.preventDefault(); actions.copyLink(S.byId.get(S.detailId)); }
     else if (e.key === "o") { e.preventDefault(); actions.openLink(S.byId.get(S.detailId)); }
     else if (e.key === "f" || e.key === "F") { e.preventDefault(); actions.followup(S.byId.get(S.detailId), e.key === "F"); }
     else if (e.key === "a") { e.preventDefault(); archiveOne(S.byId.get(S.detailId)); }
+    else scrollKey($("detail-body"), e);
     return;
   }
   if (S.modal === "help") {
     if (["Escape", "?", "q", "Enter"].includes(e.key)) { e.preventDefault(); closeModal(); }
+    else scrollKey(document.querySelector("#ov-help .body"), e);
     return;
   }
   if (S.modal === "confirm") {
@@ -1655,7 +1676,7 @@ document.querySelectorAll("thead th.sortable").forEach((th) => th.addEventListen
   render(); drawCursor();
 }));
 $("b-sort").onclick = actions.cycleSort;
-function openHelp() { openModal("help"); $("help-close").focus(); }
+function openHelp() { openModal("help"); document.querySelector("#ov-help .body").scrollTop = 0; $("help-close").focus(); }
 $("b-help").onclick = openHelp;
 $("help-close").onclick = closeModal;
 

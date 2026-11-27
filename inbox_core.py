@@ -271,13 +271,32 @@ class FakeBackend:
             ("December quick wins", "Engineering",
              "Hi all,\n\nA few small things we can ship before the holidays:\n\n"
              "- retire the old staging cluster\n- make the flaky CI job non-blocking\n"
-             "- document the on-call handover\n\nReply here if you want to pick one up."),
+             "- document the on-call handover\n- clean up unused feature flags\n"
+             "- bump the base images\n- archive dead dashboards\n\nReply here if you want to pick "
+             "one up. Each is small enough for a day, but please say so before you start, so two "
+             "people don't end up on the same thing.\n\nThanks!"),
             ("New on-call rotation starts Monday", "Platform",
              "The new rotation is live from Monday. Check the schedule and swap shifts "
              "directly with each other; ping me if anything looks off."),
             ("Incidents now show on dashboards", "Infrastructure Reliability & Observability Initiatives",
              "Open incidents are now annotated on all service dashboards, so you can see at a glance "
              "whether a spike lines up with a known incident."),
+        ]
+        # A long reply thread on the first message, so the details view has something to scroll.
+        thread = [
+            ("Bob", "I'll take the staging cluster."),
+            ("Carol", "Feature flags for me. Is there a list of the unused ones somewhere?"),
+            ("Alice", "Not yet. The flag service can export last-evaluated dates, anything older "
+                      "than 90 days is a good candidate."),
+            ("Dan", "I can do the base images, but only after Wednesday."),
+            ("Bob", "Staging cluster is drained, deleting it tomorrow unless someone shouts."),
+            ("Carol", "Found 23 flags not evaluated in 90 days. PR is up for the first ten."),
+            ("Alice", "Nice. Who wants the dashboards? Most of them belong to teams that no longer exist."),
+            ("Dan", "I'll take dashboards too, they go well with the images."),
+            ("Bob", "Staging cluster is gone. Also made the flaky CI job non-blocking while I was there."),
+            ("Carol", "Second flag PR is up. The rest need owners to confirm."),
+            ("Dan", "Base images bumped everywhere except the build agents; those need a reboot window."),
+            ("Alice", "Thanks all, that leaves the on-call handover doc. I'll write it this week."),
         ]
         descriptions = [
             "Users report intermittent failures. Collect logs from the last week, find the common "
@@ -346,6 +365,11 @@ class FakeBackend:
                 item_events = [{"time": updated.timestamp() - 3600, "who": author, "what": "created",
                                 "text": f"{author} sent a message"},
                                *[e for e in item_events if e["what"] == "comment"]]
+                if title == messages[0][0]:
+                    t0 = updated.timestamp() - 3000
+                    item_events += [{"time": t0 + 120 * k, "who": who, "what": "comment", "text": text}
+                                    for k, (who, text) in enumerate(thread)]
+                    item_events.sort(key=lambda e: e["time"])
             for k, e in enumerate(item_events):
                 if e["what"] in ("comment", "mention"):
                     e["story"] = f"{i}.{k}"
