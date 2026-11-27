@@ -45,7 +45,8 @@ TASK_FIELDS = ["name", "completed", "completed_at", "due_on", "due_at", "assigne
                "projects.name", "html_notes"]
 # GET /messages/{gid} isn't in the API reference but works (checked 2026-11-27): title, text
 # (plain-text body), parents (the team/project it was posted to), likes, followers.
-MESSAGE_FIELDS = ["title", "text", "html_notes", "parents.name", "parents.resource_type"]
+MESSAGE_FIELDS = ["title", "text", "html_notes", "parents.name", "parents.resource_type",
+                  "reaction_summary.emoji_base", "reaction_summary.count", "reaction_summary.reacted"]
 USER_FIELDS = ["name", "email"]  # for mentions: the name shown, the email on hover
 FIELDS = {"tasks": TASK_FIELDS, "messages": MESSAGE_FIELDS, "users": USER_FIELDS}
 PAGE_SIZE = 100  # API maximum for notifications
@@ -302,6 +303,18 @@ def user_gids(runs: list | None) -> set[str]:
     return {r["user"] for r in runs or [] if isinstance(r, dict) and "user" in r}
 
 
+def reactions(summary: list[dict] | None) -> list[dict]:
+    """A reaction_summary as [{emoji, count, reacted}], one per emoji: Asana lists skin-tone
+    variants separately, under the same emoji_base."""
+    out: dict[str, dict] = {}
+    for r in summary or []:
+        if base := r.get("emoji_base"):
+            o = out.setdefault(base, {"emoji": base, "count": 0, "reacted": False})
+            o["count"] += r.get("count") or 0
+            o["reacted"] = o["reacted"] or bool(r.get("reacted"))
+    return list(out.values())
+
+
 def event(n: dict) -> dict:
     """One notification as an event-list entry: {time, who, what, text, rich, story, reactions};
     rich = the story's runs (None if Asana sent no rich text), text = their plain version,
@@ -317,8 +330,7 @@ def event(n: dict) -> dict:
         "text": plain_text(rich) if rich is not None else story.get("text") or "",
         "rich": rich,
         "story": story.get("gid") if story.get("type") == "comment" else None,
-        "reactions": [{"emoji": r["emoji_base"], "count": r.get("count") or 0, "reacted": bool(r.get("reacted"))}
-                      for r in story.get("reaction_summary") or [] if r.get("emoji_base")],
+        "reactions": reactions(story.get("reaction_summary")),
     }
 
 
@@ -473,6 +485,8 @@ class ApiInbox:
             "projects": [p.get("name") or p["gid"] for p in msg.get("parents") or [] if p.get("gid")],
             "description": plain_text(rich) if rich is not None else msg.get("text") or "",
             "description_rich": rich,
+            # Read-only: PUT /messages/{gid} has no route (checked 2026-11-27).
+            "reactions": reactions(msg.get("reaction_summary")),
         }
 
     def task_fields(self, gid: str, task: dict | None) -> dict:

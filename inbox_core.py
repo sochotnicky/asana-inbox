@@ -39,6 +39,7 @@ class InboxItem:
     description_rich: list | None = None
     people: dict = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)  # {time, who, what, text, rich?, story?, reactions?}
+    reactions: list[dict] = field(default_factory=list)  # on a message itself: [{emoji, count, reacted}]
     pending: bool = False  # details (projects, due, assignee, …) still loading
 
     def due_label(self) -> str:
@@ -173,7 +174,8 @@ def item_fields(d: dict, kind: str, ignore: set[str]) -> dict:
                       else datetime.combine(date.fromisoformat(d["due_date"]), datetime.min.time())
                       if d.get("due_date") else None)
         out["due_has_time"] = bool(d.get("due_time"))
-    for key in ("assignee", "mine", "description", "description_rich", "people", "events", "pending"):
+    for key in ("assignee", "mine", "description", "description_rich", "people", "events", "reactions",
+                "pending"):
         if key in d:
             out[key] = d[key]
     return out
@@ -229,7 +231,7 @@ class ApiBackend:
 
 # Fields that only arrive with task details (blanked while a fake item is "pending").
 DETAIL_FIELDS = ("project", "projects", "completed", "url", "assignee", "mine", "due",
-                 "due_has_time", "description")
+                 "due_has_time", "description", "reactions")
 
 
 class FakeBackend:
@@ -338,6 +340,8 @@ class FakeBackend:
             if kind == "message":  # no extra rnd draws: keeps the other fake items unchanged
                 title, project, description = messages[i % len(messages)]
                 projects, url = [project], f"https://app.asana.com/1/0/message/{1000 + i}"
+                item_reactions = [{"emoji": "👍", "count": 6, "reacted": True},
+                                  {"emoji": "🎉", "count": 2, "reacted": False}]
                 author = people[i % len(people)]
                 item_events = [{"time": updated.timestamp() - 3600, "who": author, "what": "created",
                                 "text": f"{author} sent a message"},
@@ -352,6 +356,8 @@ class FakeBackend:
                         e["reactions"].append({"emoji": "🙏", "count": 1, "reacted": False})
             if task or kind == "message":
                 self.detailed.add(str(i))
+            if kind != "message":
+                item_reactions = []
             self.items[str(i)] = InboxItem(
                 id=str(i),
                 title=title,
@@ -365,6 +371,7 @@ class FakeBackend:
                 mine=mine,
                 description=description,
                 events=item_events,
+                reactions=item_reactions,
                 people={r["user"]: directory[r["user"]] for e in item_events for r in e.get("rich") or []
                         if isinstance(r, dict) and "user" in r},
                 due=(now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -383,7 +390,7 @@ class FakeBackend:
             time.sleep(self.list_delay)
         # Copies with the details blanked, as asana_api lists tasks before their details.
         return [dataclasses.replace(it, project=PENDING_PROJECT, projects=[], completed=None, assignee=None,
-                                    mine=False, due=None, due_has_time=False, description="",
+                                    mine=False, due=None, due_has_time=False, description="", reactions=[],
                                     pending=True)
                 if self._has_details(it) else dataclasses.replace(it)
                 for it in self.items.values()]

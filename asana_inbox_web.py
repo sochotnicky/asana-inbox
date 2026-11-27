@@ -129,7 +129,8 @@ def item_json(it: InboxItem) -> dict:
         "kind": it.kind, "updated": ts(it.updated), "completed": ts(it.completed), "url": it.url,
         "assignee": it.assignee, "mine": it.mine, "due": ts(it.due), "due_has_time": it.due_has_time,
         "description": it.description, "description_rich": it.description_rich,
-        "people": it.people, "events": it.events, "pending": it.pending,
+        "people": it.people, "events": it.events, "reactions": it.reactions,
+        "pending": it.pending,
     }
 
 
@@ -815,8 +816,10 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: v
 .event { padding: 6px 0; border-top: 1px solid var(--border); }
 .event .when { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
 .event .reactions { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 4px; vertical-align: middle; }
-.event .react { padding: 0 6px; font-size: 12px; }
-.event .react.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--surface-2)); }
+.reactions.readonly { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.event .react, .reactions.readonly .react { padding: 0 6px; font-size: 12px; }
+.reactions.readonly .react { border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.reactions.readonly .react.on, .event .react.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--surface-2)); }
 .event .react.add { color: var(--muted); }
 .event .palette { display: inline-flex; gap: 2px; }
 .event .palette kbd { margin-left: 3px; font-size: 10px; }
@@ -1420,6 +1423,11 @@ function renderDetail() {
   row("Link", it.url ? el("a", {href: it.url, target: "_blank", rel: "noopener noreferrer", text: it.url}) : "-");
   body.append(dl);
   if (it.description.trim()) body.append(el("h3", {text: it.kind === "message" ? "Message" : "Description"}), el("div", {class: "desc"}, ...richNodes(it.description_rich, it.description, it.people)));
+  if (it.reactions.length) {  // a message's own reactions: read-only, the API can't add them
+    const chips = el("div", {class: "reactions readonly", title: "Reactions (react in Asana)"});
+    for (const r of it.reactions) chips.append(el("span", {class: "react" + (r.reacted ? " on" : ""), text: `${r.emoji} ${r.count}`}));
+    body.append(chips);
+  }
   if (it.events.length) {
     body.append(el("h3", {text: "Notifications"}));
     for (const e of it.events) {
