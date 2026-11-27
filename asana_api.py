@@ -39,7 +39,7 @@ TOKEN_FILE = CONFIG / "token"
 
 NOTIFICATION_FIELDS = ("created_at,created_by.name,is_read,story_resource_subtype,"
                        "work_objects.name,work_objects.resource_type,story.text,story.html_text,"
-                       "story.type")
+                       "story.type,story.reaction_summary.emoji_base,story.reaction_summary.reacted")
 TASK_FIELDS = ["name", "completed", "completed_at", "due_on", "due_at", "assignee.name",
                "projects.name", "html_notes"]
 # GET /messages/{gid} isn't in the API reference but works (checked 2026-11-27): title, text
@@ -302,9 +302,9 @@ def user_gids(runs: list | None) -> set[str]:
 
 
 def event(n: dict) -> dict:
-    """One notification as an event-list entry: {time, who, what, text, rich, story}; rich = the
-    story's runs (None if Asana sent no rich text), text = their plain version, story = the
-    comment's gid (None for other stories), for reacting to it."""
+    """One notification as an event-list entry: {time, who, what, text, rich, story, reacted};
+    rich = the story's runs (None if Asana sent no rich text), text = their plain version,
+    story = the comment's gid (None for other stories) and reacted = whether I gave it a 👍."""
     sub = n.get("story_resource_subtype") or "?"
     story = n.get("story") or {}
     rich = html_runs(story["html_text"]) if story.get("html_text") else None
@@ -315,6 +315,8 @@ def event(n: dict) -> dict:
         "text": plain_text(rich) if rich is not None else story.get("text") or "",
         "rich": rich,
         "story": story.get("gid") if story.get("type") == "comment" else None,
+        "reacted": any(r.get("emoji_base") == "👍" and r.get("reacted")
+                       for r in story.get("reaction_summary") or []),
     }
 
 

@@ -329,7 +329,7 @@ class FakeBackend:
                                *[e for e in item_events if e["what"] == "comment"]]
             for k, e in enumerate(item_events):
                 if e["what"] in ("comment", "mention"):
-                    e["story"] = f"{i}.{k}"
+                    e["story"], e["reacted"] = f"{i}.{k}", (i + k) % 5 == 0
             if task or kind == "message":
                 self.detailed.add(str(i))
             self.items[str(i)] = InboxItem(
