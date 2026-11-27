@@ -51,6 +51,7 @@ Rows appear as soon as the notifications are listed. Projects, due dates, assign
 
 - The tool shows **unread** notifications, one row per task (or message, daily summary, …). Archiving a row marks its notifications read, through the same read state the web Inbox uses.
 - The API can't archive notifications, so read ones stay in the web Inbox's *All* view until you archive them there. They don't show up in this tool.
+  To make the web Inbox match this tool, set its *Activity* tab's filter to **Unread**: rows you archive here then disappear there too.
 - Every load pages through all notifications that aren't archived, read ones included, 100 per request, so a very full Inbox loads more slowly. `-n N` scans only the newest N.
 
 ### Other options
