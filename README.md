@@ -17,7 +17,7 @@ All screenshots use the built-in fake data (`./asana_inbox.py --fake`).
 | **Details** (`Enter`): description, projects and notifications | **Archive confirmation** (`a`) listing what will be archived |
 | [![Task details](docs/details.svg)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/details.svg) | [![Archive confirmation](docs/archive.svg)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/archive.svg) |
 
-Regenerate them with `./docs/screenshots.py`.
+Regenerate them with `./docs/screenshots.py`, and the [web UI's](#web-ui-screenshots) with `./docs/web-screenshots.py` (its first run downloads Playwright's headless Chromium).
 
 ## Requirements
 
@@ -124,6 +124,21 @@ It picks how to sign in like this:
 3. Otherwise, the **personal access token** from [Setup](#setup), shared by every tab.
 
 `--workspace`, `-n` and `--ignore-project` (and their env vars) work as in the TUI. With `--fake`, rows appear first and their details fill in over a few seconds, like a real load. Archiving in fake mode only removes rows from memory, and `r` starts the demo fill-in again.
+
+### Web UI screenshots
+
+Also from the fake data (`./asana_inbox_web.py --fake`).
+
+[![Web UI: inbox grouped by project, with a few rows marked](docs/web-main.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-main.png)
+
+| | |
+| --- | --- |
+| **Filtered** with `l mine`, then all shown rows marked with `v` | **Details** (`Enter`): description, projects and notifications |
+| [![Web UI: filter to my tasks](docs/web-filter.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-filter.png) | [![Web UI: task details](docs/web-details.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-details.png) |
+| **Archive confirmation** (`a`) listing what will be archived | **Dark mode** (◐ button, or follows the system) |
+| [![Web UI: archive confirmation](docs/web-archive.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-archive.png) | [![Web UI: dark mode](docs/web-dark.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-dark.png) |
+| **Login screen** with OAuth and a logo configured | |
+| [![Web UI: login screen](docs/web-login.png)](https://raw.githubusercontent.com/sochotnicky/asana-inbox/main/docs/web-login.png) | |
 
 ### OAuth setup
 
