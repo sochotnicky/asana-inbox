@@ -129,7 +129,7 @@ It picks how to sign in like this:
 
 1. In the Asana developer console (<https://app.asana.com/0/my-apps>), create an app.
 2. Under *OAuth*, add this redirect URL exactly: `http://localhost:8765/auth/callback`. Use your port if you pass `--port`, or whatever you set with `--redirect-uri` / `ASANA_REDIRECT_URI`.
-3. Give the app full permissions. By default the login asks for the app's full permissions, because Asana serves message text only to tokens that have them ("Full permissions are required to use this endpoint"). This means every login gives the web UI full access to that person's Asana account. To ask for less, pass `--scopes` / `ASANA_SCOPES` with a space-separated list; the tool needs `notifications:read notifications:write tasks:read tasks:write projects:read users:read workspaces:read stories:read`, and the app's permissions must allow whatever you ask for. With that narrower list, messages show the 403 error in their details instead of their text.
+3. Give the app full permissions. By default the login asks for the app's full permissions, because Asana serves message text only to tokens that have them ("Full permissions are required to use this endpoint"). This means every login gives the web UI full access to that person's Asana account. To ask for less, pass `--scopes` / `ASANA_SCOPES` with a space-separated list; the tool needs `notifications:read notifications:write tasks:read tasks:write projects:read users:read workspaces:read stories:read stories:write`, and the app's permissions must allow whatever you ask for. With that narrower list, messages show the 403 error in their details instead of their text.
 4. Give the tool the client id and secret, either in the environment:
 
    ```sh

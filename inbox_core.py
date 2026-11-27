@@ -5,7 +5,8 @@ mapping, sorting and regex matching.
 
 A backend has `list_items(progress=None) -> list[InboxItem]` and `archive(ids)`. Optionally
 `fill(items)` yields {item id: {InboxItem field: value}} as details arrive, for items returned
-with pending=True; it runs in a worker thread after list_items.
+with pending=True; it runs in a worker thread after list_items. Optionally `react(story,
+reacted)` adds or removes your 👍 on a comment (an event's "story").
 """
 
 import dataclasses
@@ -37,7 +38,7 @@ class InboxItem:
     # None for plain text only; events may carry "rich" too. people: {user gid: {name, email}}.
     description_rich: list | None = None
     people: dict = field(default_factory=dict)
-    events: list[dict] = field(default_factory=list)  # {time, who, what, text, rich?}
+    events: list[dict] = field(default_factory=list)  # {time, who, what, text, rich?, story?, reacted?}
     pending: bool = False  # details (projects, due, assignee, …) still loading
 
     def due_label(self) -> str:
@@ -203,6 +204,9 @@ class ApiBackend:
         task = self.api.create_task(name, due.isoformat(), notes)
         return task.get("permalink_url") or f"https://app.asana.com/0/0/{task['gid']}"
 
+    def react(self, story: str, reacted: bool) -> None:
+        self.api.react(story, reacted)
+
     def archive(self, ids: list[str]) -> None:
         if failed := self.api.archive(ids):
             raise RuntimeError(f"Asana couldn't mark {len(failed)} notifications read")
@@ -292,6 +296,7 @@ class FakeBackend:
 
         self.items: dict[str, InboxItem] = {}
         self.created: list[dict] = []  # follow-up tasks "created" in the demo
+        self.reactions: dict[str, bool] = {}  # story -> reacted, set in the demo
         self.detailed: set[str] = set()  # ids whose details asana_api would fetch after listing
         for i in range(n):
             kind = rnd.choices(["task", "added to project", "message", "daily summary"],
@@ -322,6 +327,9 @@ class FakeBackend:
                 item_events = [{"time": updated.timestamp() - 3600, "who": author, "what": "created",
                                 "text": f"{author} sent a message"},
                                *[e for e in item_events if e["what"] == "comment"]]
+            for k, e in enumerate(item_events):
+                if e["what"] in ("comment", "mention"):
+                    e["story"] = f"{i}.{k}"
             if task or kind == "message":
                 self.detailed.add(str(i))
             self.items[str(i)] = InboxItem(
@@ -374,6 +382,9 @@ class FakeBackend:
         """Remembered in `created` only: the demo never talks to Asana."""
         self.created.append({"name": name, "due": due, "notes": notes})
         return f"https://app.asana.com/1/0/task/{9000 + len(self.created)}"
+
+    def react(self, story: str, reacted: bool) -> None:
+        self.reactions[story] = reacted
 
     def archive(self, ids: list[str]) -> None:
         for i in ids:

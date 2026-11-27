@@ -302,8 +302,9 @@ def user_gids(runs: list | None) -> set[str]:
 
 
 def event(n: dict) -> dict:
-    """One notification as an event-list entry: {time, who, what, text, rich}; rich = the
-    story's runs (None if Asana sent no rich text), text = their plain version."""
+    """One notification as an event-list entry: {time, who, what, text, rich, story}; rich = the
+    story's runs (None if Asana sent no rich text), text = their plain version, story = the
+    comment's gid (None for other stories), for reacting to it."""
     sub = n.get("story_resource_subtype") or "?"
     story = n.get("story") or {}
     rich = html_runs(story["html_text"]) if story.get("html_text") else None
@@ -313,6 +314,7 @@ def event(n: dict) -> dict:
         "what": REASONS.get(sub, sub.replace("_", " ")),
         "text": plain_text(rich) if rich is not None else story.get("text") or "",
         "rich": rich,
+        "story": story.get("gid") if story.get("type") == "comment" else None,
     }
 
 
@@ -499,6 +501,12 @@ class ApiInbox:
             data["notes"] = notes
         return self.client.request("POST", "/tasks", json={"data": data},
                                    params={"opt_fields": "name,due_on,permalink_url"})["data"]
+
+    def react(self, story: str, reacted: bool, emoji: str = "👍") -> None:
+        """Add (or remove) your reaction to a comment. The `reactions` field of PUT /stories isn't
+        in the API reference yet; Asana staff described it in the forum (2026-10-26)."""
+        body = {"data": {"reactions": [{"emoji": emoji, "reacted": reacted}]}}
+        self.client.request("PUT", f"/stories/{story}", json=body)
 
     def archive(self, ids: list[str]) -> list[str]:
         """Mark all unread notifications of these items read: the same as archiving them in the

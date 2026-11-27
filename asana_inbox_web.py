@@ -28,6 +28,9 @@ is on and the browser isn't logged in):
                                 on <item title>"; notes: its description, default the item's link; due:
                                 YYYY-MM-DD or today/tomorrow/+N/weekday, default today), then
                                 archive the item unless archive is false; returns {url, due, archived}
+    POST /api/react {id, story, reacted}
+                                add (reacted: true) or remove my 👍 on one of the item's comments;
+                                returns {reacted}
     GET  /auth/login            OAuth: redirect to Asana (PKCE)
     GET  /auth/callback         OAuth: Asana redirects back here with code + state
     POST /auth/logout           end this browser's session
@@ -250,6 +253,21 @@ class InboxService:
             notes = it.url if notes is None else notes.strip()
         url = self.backend.create_task(text, due, notes)
         return url, bool(archive and self.archive([item_id]))
+
+    def react(self, item_id: str, story: str, reacted: bool) -> None:
+        """Add or remove my 👍 on a comment of an item. Raises KeyError for an unknown item or
+        comment."""
+        if not hasattr(self.backend, "react"):
+            raise RuntimeError("this backend can't react")
+        with self.lock:
+            event = next((e for e in self.items[item_id].events if e.get("story") == story), None)
+        if event is None:
+            raise KeyError(story)
+        self.backend.react(story, reacted)
+        with self.lock:
+            event["reacted"] = reacted
+            if (it := self.items.get(item_id)) is not None:
+                self._broadcast({"type": "details", "generation": self.generation, "items": [item_json(it)]})
 
     def archive(self, ids: list[str]) -> int:
         with self.lock:
@@ -476,6 +494,27 @@ def create_app(*, mode: str, allowed_hosts: set[str], service: InboxService | No
             return failed(request, e, "Creating the follow-up")
         return JSONResponse({"url": url, "due": due.isoformat(), "archived": archived})
 
+    async def react(request: Request) -> Response:
+        if bad := guard(request):
+            return bad
+        svc, err = await service_for(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+            item_id, story, reacted = body["id"], body["story"], body["reacted"]
+            assert isinstance(item_id, str) and isinstance(story, str) and isinstance(reacted, bool)
+        except (ValueError, KeyError, TypeError, AssertionError):
+            return JSONResponse({"error": 'expected {"id": "…", "story": "…", "reacted": true}'},
+                                status_code=400)
+        try:
+            await run_in_threadpool(svc.react, item_id, story, reacted)
+        except KeyError:
+            return JSONResponse({"error": "no such comment (reload?)"}, status_code=404)
+        except Exception as e:
+            return failed(request, e, "Reacting")
+        return JSONResponse({"reacted": reacted})
+
     async def events(request: Request) -> Response:
         if bad := guard(request):
             return bad
@@ -581,6 +620,7 @@ def create_app(*, mode: str, allowed_hosts: set[str], service: InboxService | No
         Route("/api/reload", reload, methods=["POST"]),
         Route("/api/archive", archive, methods=["POST"]),
         Route("/api/followup", followup, methods=["POST"]),
+        Route("/api/react", react, methods=["POST"]),
         Route("/auth/login", login),
         Route("/auth/callback", callback),
         Route("/auth/logout", logout, methods=["POST"]),
@@ -771,6 +811,8 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: v
 .desc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .event { padding: 6px 0; border-top: 1px solid var(--border); }
 .event .when { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
+.event .react { padding: 0 6px; margin-left: 4px; opacity: .45; filter: grayscale(1); }
+.event .react.on { opacity: 1; filter: none; }
 .event .text { white-space: pre-wrap; margin: 3px 0 0 18px; overflow-wrap: anywhere; }
 .mention { color: var(--accent-text); background: var(--mark); font-weight: 600; border-radius: 4px;
            padding: 0 4px; white-space: nowrap; cursor: help; }
@@ -1375,9 +1417,27 @@ function renderDetail() {
       const div = el("div", {class: "event"},
         el("span", {class: "when", text: e.time ? fmt(e.time) : "?"}),
         el("strong", {text: e.who || "Asana"}), ` · ${e.what}`);
+      if (e.story) {
+        const like = el("button", {class: "react" + (e.reacted ? " on" : ""), text: "👍",
+                                   title: e.reacted ? "Remove your 👍" : "React with 👍"});
+        like.setAttribute("aria-pressed", e.reacted ? "true" : "false");
+        like.onclick = () => react(it, e, like);
+        div.append(" ", like);
+      }
       if ((e.text || "").trim()) div.append(el("div", {class: "text"}, ...richNodes(e.rich, e.text, it.people)));
       body.append(div);
     }
+  }
+}
+async function react(it, e, button) {
+  button.disabled = true;
+  try {
+    await api("/api/react", {id: it.id, story: e.story, reacted: !e.reacted});
+    e.reacted = !e.reacted;
+    if (S.modal === "detail" && S.detailId === it.id) renderDetail();
+  } catch (err) {
+    button.disabled = false;
+    toast(`Reacting failed: ${err.message}`, "error");
   }
 }
 $("detail-close").onclick = closeModal;

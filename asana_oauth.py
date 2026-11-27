@@ -25,7 +25,7 @@ TOKEN_URL = "https://app.asana.com/-/oauth_token"
 # Default: the app's full permissions (no scope parameter), since message text needs them.
 # NARROW_SCOPES is everything else the tool uses, for `--scopes` when messages can go without.
 NARROW_SCOPES = ("notifications:read notifications:write tasks:read tasks:write projects:read users:read "
-                 "workspaces:read stories:read")
+                 "workspaces:read stories:read stories:write")
 DEFAULT_SCOPES = "full"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "asana-inbox"
 CLIENT_FILE = CONFIG / "oauth-client.json"
