@@ -39,12 +39,14 @@ TOKEN_FILE = CONFIG / "token"
 
 NOTIFICATION_FIELDS = ("created_at,created_by.name,is_read,story_resource_subtype,"
                        "work_objects.name,work_objects.resource_type,story.text,story.html_text,"
-                       "story.type")
+                       "story.type,story.reaction_summary.emoji_base,story.reaction_summary.count,"
+                       "story.reaction_summary.reacted")
 TASK_FIELDS = ["name", "completed", "completed_at", "due_on", "due_at", "assignee.name",
                "projects.name", "html_notes"]
 # GET /messages/{gid} isn't in the API reference but works (checked 2026-11-27): title, text
 # (plain-text body), parents (the team/project it was posted to), likes, followers.
-MESSAGE_FIELDS = ["title", "text", "html_notes", "parents.name", "parents.resource_type"]
+MESSAGE_FIELDS = ["title", "text", "html_notes", "parents.name", "parents.resource_type",
+                  "reaction_summary.emoji_base", "reaction_summary.count", "reaction_summary.reacted"]
 USER_FIELDS = ["name", "email"]  # for mentions: the name shown, the email on hover
 FIELDS = {"tasks": TASK_FIELDS, "messages": MESSAGE_FIELDS, "users": USER_FIELDS}
 PAGE_SIZE = 100  # API maximum for notifications
@@ -301,9 +303,23 @@ def user_gids(runs: list | None) -> set[str]:
     return {r["user"] for r in runs or [] if isinstance(r, dict) and "user" in r}
 
 
+def reactions(summary: list[dict] | None) -> list[dict]:
+    """A reaction_summary as [{emoji, count, reacted}], one per emoji: Asana lists skin-tone
+    variants separately, under the same emoji_base."""
+    out: dict[str, dict] = {}
+    for r in summary or []:
+        if base := r.get("emoji_base"):
+            o = out.setdefault(base, {"emoji": base, "count": 0, "reacted": False})
+            o["count"] += r.get("count") or 0
+            o["reacted"] = o["reacted"] or bool(r.get("reacted"))
+    return list(out.values())
+
+
 def event(n: dict) -> dict:
-    """One notification as an event-list entry: {time, who, what, text, rich}; rich = the
-    story's runs (None if Asana sent no rich text), text = their plain version."""
+    """One notification as an event-list entry: {time, who, what, text, rich, story, reactions};
+    rich = the story's runs (None if Asana sent no rich text), text = their plain version,
+    story = the comment's gid (None for other stories), reactions = [{emoji, count, reacted}]
+    (reacted: whether one of them is mine). Skin-tone variants count under their base emoji."""
     sub = n.get("story_resource_subtype") or "?"
     story = n.get("story") or {}
     rich = html_runs(story["html_text"]) if story.get("html_text") else None
@@ -313,6 +329,8 @@ def event(n: dict) -> dict:
         "what": REASONS.get(sub, sub.replace("_", " ")),
         "text": plain_text(rich) if rich is not None else story.get("text") or "",
         "rich": rich,
+        "story": story.get("gid") if story.get("type") == "comment" else None,
+        "reactions": reactions(story.get("reaction_summary")),
     }
 
 
@@ -467,6 +485,8 @@ class ApiInbox:
             "projects": [p.get("name") or p["gid"] for p in msg.get("parents") or [] if p.get("gid")],
             "description": plain_text(rich) if rich is not None else msg.get("text") or "",
             "description_rich": rich,
+            # Read-only: PUT /messages/{gid} has no route (checked 2026-11-27).
+            "reactions": reactions(msg.get("reaction_summary")),
         }
 
     def task_fields(self, gid: str, task: dict | None) -> dict:
@@ -499,6 +519,12 @@ class ApiInbox:
             data["notes"] = notes
         return self.client.request("POST", "/tasks", json={"data": data},
                                    params={"opt_fields": "name,due_on,permalink_url"})["data"]
+
+    def react(self, story: str, emoji: str, reacted: bool) -> None:
+        """Add (or remove) my `emoji` reaction to a comment. The `reactions` field of PUT /stories isn't
+        in the API reference yet; Asana staff described it in the forum (2026-10-26)."""
+        body = {"data": {"reactions": [{"emoji": emoji, "reacted": reacted}]}}
+        self.client.request("PUT", f"/stories/{story}", json=body)
 
     def archive(self, ids: list[str]) -> list[str]:
         """Mark all unread notifications of these items read: the same as archiving them in the
